@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 ﻿# Agente de Pré-atendimento Imobiliário (WhatsApp-ready)
 
 Backend FastAPI com orquestrador determinístico para leads de compra/aluguel de imóveis via WhatsApp (simulado por HTTP). Inclui base dummy de 46 imóveis, regras de qualificação, gates anti-alucinação e testes automatizados.
@@ -82,3 +83,6 @@ pytest
 - Não solicita dados sensíveis; coleta apenas nome, localização, orçamento e preferências.
 - Só responde detalhes de imóveis vindos da base/tool; gates impedem respostas sem dados reais.
 - Perguntas sempre uma por vez, priorizando localização > orçamento > tipo.
+=======
+# projeto_imobiliaria
+>>>>>>> e3bbbe7a8f0abdf756c1479dcf94b706f0a5fe98
