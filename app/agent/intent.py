@@ -8,7 +8,7 @@ INTENT_KEYWORDS = {
     "investir": ["investir", "investimento", "renda", "rentabilidade"],
     "pesquisar": ["pesquisar", "olhando", "ver opcoes", "apenas olhando", "so olhando"],
     "suporte": ["reclama", "suporte", "problema", "erro"],
-    "humano": ["atendente", "humano", "corretor", "pessoa"],
+    "humano": ["atendente", "humano", "corretor"],
 }
 
 

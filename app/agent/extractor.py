@@ -20,6 +20,7 @@ PROPERTY_TYPES = {
 
 CITY_ALIASES = {
     "joao pessoa": "Joao Pessoa",
+    "jp": "Joao Pessoa",
     "campina grande": "Campina Grande",
     "recife": "Recife",
     "natal": "Natal",
@@ -85,7 +86,7 @@ def detect_type(text: str) -> Optional[str]:
 def detect_city(text: str) -> Optional[str]:
     normalized = _strip_accents(text.lower())
     for alias, canonical in CITY_ALIASES.items():
-        if alias in normalized:
+        if re.search(rf"\b{re.escape(alias)}\b", normalized):
             return canonical
     return None
 

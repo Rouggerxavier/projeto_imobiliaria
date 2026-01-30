@@ -1,38 +1,69 @@
-<<<<<<< HEAD
-﻿# Agente de Pré-atendimento Imobiliário (WhatsApp-ready)
+# Agente de IA Imobiliário (FastAPI + LLM, pronto para WhatsApp)
+Backend de pré-atendimento imobiliário com FastAPI, orquestração determinística + LLM (chamada única), base dummy de 46 imóveis e testes automatizados.
 
-Backend FastAPI com orquestrador determinístico para leads de compra/aluguel de imóveis via WhatsApp (simulado por HTTP). Inclui base dummy de 46 imóveis, regras de qualificação, gates anti-alucinação e testes automatizados.
+## Visão geral
+- Uma chamada LLM por mensagem via `llm_decide()` (intent, critérios, handoff e plano juntos).
+- Prioridade de provedores: **Google Gemini 2.0 Flash (OpenAI compat)** → OpenAI/OpenRouter → Groq/Ollama → fallback determinístico.
+- Guard-rails: enum de ações, validação de filtros/tipos, cache de respostas, backoff em 429, timeout + retry, diferenciação de critérios confirmados vs inferidos.
+- Fallback seguro: se LLM falha ou não há API key, usa regras/regex sem travar conversa.
 
-## Requisitos
-- Python 3.11+
-- pip
+## Arquitetura (atual)
+- `app/main.py` – FastAPI, `POST /webhook`, `GET /health`.
+- `app/agent/controller.py` – pipeline de mensagem: obtém estado → chama `RealEstateAIAgent.decide()` → executa ação (pergunta, busca, handoff) → atualiza histórico.
+- `app/agent/ai_agent.py` – cérebro de decisão; expõe classify/extract/plan/handoff/generate com fallback determinístico.
+- `app/agent/llm.py` – integração OpenAI-compatible; `llm_decide()` unificado; cache, rate-limit parsing, streaming opcional; constrói `extra_body` para bases locais.
+- `app/agent/rules.py` – gates `can_search_properties`, `missing_critical_fields`, política de pergunta única.
+- `app/agent/extractor.py` e `intent.py` – usados como fallback (regex/keywords).
+- `app/agent/tools.py` – busca ranqueada em `app/data/properties.json`, stub de agendamento/handoff humano.
+- `app/tests/` – `test_single_llm_call.py`, `test_edge_cases.py`, etc.
 
-## Instalação
-`ash
+### Fluxo de uma mensagem
+1) `controller.handle_message()` recebe `{session_id, message, name}`  
+2) `ai_agent.decide()` → `llm_decide()` (ou fallback) retorna `{intent, criteria, handoff, plan}`  
+3) Gates de segurança ajustam plano; executa ação (`ASK|SEARCH|LIST|REFINE|SCHEDULE|HANDOFF|ANSWER_GENERAL|CLARIFY`)  
+4) Resposta devolvida e histórico salvo em memória (`SessionState`).
+
+## Instalação / setup rápido
+```
 python -m venv .venv
-./.venv/Scripts/activate   # PowerShell
+.\.venv\Scripts\activate          # PowerShell
 pip install -r requirements.txt
-cp .env.example .env
-`
+cp .env.example .env             # edite credenciais
+```
 
-## Rodar local
-`ash
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
-`
-Healthcheck: GET /health
+## Variáveis de ambiente principais
+| Chave | Exemplo (default atual) | Observações |
+|-------|-------------------------|-------------|
+| `OPENAI_API_KEY` | `AIzaSyBVFzrjr-kuNee5eAipcVIWDusMsB2osU0` | Usa endpoint compatível do Gemini. |
+| `OPENAI_MODEL` | `gemini-2.0-flash` | Modelo padrão. |
+| `OPENAI_BASE_URL` | `https://generativelanguage.googleapis.com/v1beta/openai` | Necessário para compat OpenAI. |
+| `GROQ_API_KEY` | _(vazio)_ | Opcional fallback (ex.: `ollama-local`). |
+| `GROQ_MODEL` | _(vazio)_ | Só se usar Groq/Ollama. |
+| `USE_LLM` | `true` | `false` ativa somente fallback determinístico. |
+| `TRIAGE_ONLY` | `false` | `true` desativa busca/listagem e faz só triagem + resumo. |
+| `LLM_TIMEOUT` | `120` | 30s remoto / 120s local sugerido. |
+| `LLM_KEEP_ALIVE` | `30m` | Para Ollama local. |
+| `LLM_NUM_CTX` | `2048` | Contexto para modelos locais. |
+| `LLM_NUM_THREADS` | `8` | Ajuste à CPU local. |
 
-## Webhook (MVP)
-Endpoint: POST /webhook
-Body JSON:
-`json
+## Execução local
+Para evitar bloqueio do `uvicorn.exe` pelo App Control, execute via Python:
+```
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+```
+Healthcheck: `GET /health`
+
+## Webhook de exemplo
+`POST /webhook`
+```json
 {
   "session_id": "lead-123",
   "message": "quero alugar um ape em Manaíra até 3 mil, 2 quartos",
   "name": "Maria"
 }
-`
-Resposta típica:
-`json
+```
+Resposta típica (quando consegue buscar):
+```json
 {
   "reply": "Encontrei estas opções... Quer agendar visita ou refinar (bairro/quartos/orçamento)?",
   "properties": ["JP-MAN-006", "JP-MAN-002"],
@@ -44,45 +75,37 @@ Resposta típica:
     "last_suggestions": ["JP-MAN-006", "JP-MAN-002"]
   }
 }
-`
-Use session_id para manter contexto entre mensagens.
+```
+Use `session_id` para manter contexto entre mensagens.
 
-## Fluxos cobertos
-- **Happy path**: alugar em Manaira até 3k → lista 3–6 opções → CTA agendar/refinar.
-- **Falta localização**: pergunta apenas cidade/bairro.
-- **Falta orçamento**: pergunta teto mensal/total conforme intenção.
-- **Zero resultados**: sugere ampliar orçamento ou bairros vizinhos.
-- **Agendamento**: detecta palavra-chave “visita” e solicita horários/modo.
-- **Handoff humano**: dispara quando há pedido de negociação, humano explícito ou urgência alta com orçamento claro.
+## Base de dados dummy
+`app/data/properties.json` com 46 imóveis (João Pessoa, Campina Grande, Recife, Natal, Cabedelo). Campos: id, título, cidade, bairro, tipo, quartos, vagas, área, preços de venda/aluguel, condomínio, IPTU, pet, mobiliado, descrição curta, url de fotos.
 
-## Arquitetura
-- pp/main.py – FastAPI + endpoint /webhook.
-- pp/agent/controller.py – orquestra fluxo, decide próxima ação, aplica gates.
-- pp/agent/extractor.py – extrai critérios (localização, tipo, quartos, orçamento, pet, mobiliado, urgência).
-- pp/agent/rules.py – gates can_search_properties / can_answer_about_property e política de pergunta única.
-- pp/agent/tools.py – base dummy (pp/data/properties.json), busca ranqueada, stub de agendamento e handoff.
-- pp/agent/prompts.py – prompt de sistema para futura integração com LLM/tool-calling.
-- pp/tests – testes unitários para gates, intenção e fluxo feliz.
+## Robustez e anti-alucinação
+- Enum estrito de ações (`ASK|SEARCH|LIST|REFINE|SCHEDULE|HANDOFF|ANSWER_GENERAL|CLARIFY`).  
+- Validação/sanitização de filtros e tipos no pipeline.  
+- Timeout (30s remoto/120s local), retry (2x), cache por mensagem (TTL 5 min).  
+- Backoff em 429 com parsing de `retry_after`; desvia para fallback sem spam.  
+- Critérios marcados como `confirmed` vs `inferred`; buscas críticas usam confirmados.  
+- Sem persona fictícia; tom neutro profissional; não inventa dados fora da base/tool.
 
-## Dados dummy
-pp/data/properties.json com 46 imóveis (Joao Pessoa, Campina Grande, Recife, Natal, Cabedelo). Campos: id, titulo, cidade, bairro, tipo, quartos, vagas, area_m2, preco_venda, preco_aluguel, condominio, iptu, aceita_pet, mobiliado, descricao_curta, url_fotos.
+## Modo “triagem-only” (MVP)
+- Ative com `TRIAGE_ONLY=true`.  
+- O agente **não** busca nem lista imóveis; apenas coleta dados com uma pergunta por vez, sem repetir campo já confirmado.  
+- Campos críticos: operação, cidade/bairro, tipo, quartos/suíte, vagas, orçamento máx., prazo.  
+- Prefs adicionais: andar/posição/vista, lazer, pet, mobiliado, vagas cobertas/soltas, etc.  
+- Ao concluir, gera resumo (texto + JSON) e aciona handoff humano com o payload estruturado.  
 
 ## Testes
-`ash
-cd app
-pytest
-`
+```
+python test_ai_agent.py        # garante 1 chamada LLM e fallback em 429
+python test_edge_cases.py      # desvio, contradição, inferência x confirmado
+pytest                         # roda suíte completa
+python exemplo_conversa.py     # simula conversa end-to-end
+```
 
-## Como evoluir para WhatsApp Cloud API
-1) Criar webhook público (ngrok ou deploy) e configurar no app do Meta.
-2) No handler /webhook, adaptar para payload do Cloud API (messages[0].text.body, rom, etc.).
-3) Responder via POST /messages do WhatsApp com o eply retornado pelo controller.
-4) Persistir estado em Redis/DB em vez de memória (SessionState).
-
-## Observações de LGPD e anti-alucinação
-- Não solicita dados sensíveis; coleta apenas nome, localização, orçamento e preferências.
-- Só responde detalhes de imóveis vindos da base/tool; gates impedem respostas sem dados reais.
-- Perguntas sempre uma por vez, priorizando localização > orçamento > tipo.
-=======
-# projeto_imobiliaria
->>>>>>> e3bbbe7a8f0abdf756c1479dcf94b706f0a5fe98
+## Próximos passos sugeridos
+- Cache persistente (Redis) para sessões e respostas.  
+- Métricas de tokens/latência e dashboard simples.  
+- Integração WhatsApp Cloud API (adaptar payloads e envio).  
+- Streaming opcional para respostas longas.
