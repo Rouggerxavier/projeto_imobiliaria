@@ -119,6 +119,10 @@ def extract_criteria(message: str, known_neighborhoods: Iterable[str]) -> Dict[s
     if neighborhood:
         result["neighborhood"] = neighborhood
 
+    lowered_plain = _strip_accents(text.lower())
+    if "orla" in lowered_plain or "beira mar" in lowered_plain or "beira-mar" in lowered_plain or "praia" in lowered_plain:
+        result["micro_location"] = "orla"
+
     prop_type = detect_type(text)
     if prop_type:
         result["property_type"] = prop_type
@@ -127,6 +131,9 @@ def extract_criteria(message: str, known_neighborhoods: Iterable[str]) -> Dict[s
     bedrooms = extract_number(lowered, r"(\d+)\s*(quarto|qtos|dorm|q\b|qts)")
     if bedrooms:
         result["bedrooms"] = bedrooms
+    suites = extract_number(lowered, r"(\d+)\s*(suite|su[ií]te)s?")
+    if suites:
+        result["suites"] = suites
     parking = extract_number(lowered, r"(\d+)\s*(vaga|vagas)")
     if parking is not None:
         result["parking"] = parking
@@ -150,6 +157,29 @@ def extract_criteria(message: str, known_neighborhoods: Iterable[str]) -> Dict[s
         urgency = "media"
     if urgency:
         result["urgency"] = urgency
+
+    if "o mais rapido" in lowered or "o mais rÃ¡pido" in lowered or "mais rapido possivel" in lowered or "o quanto antes" in lowered or "asap" in lowered:
+        result["timeline"] = "3m"
+
+    leisure_keywords = {
+        "piscina": "piscina",
+        "academia": "academia",
+        "gourmet": "gourmet",
+        "playground": "playground",
+        "quadra": "quadra",
+        "cowork": "coworking",
+        "salÃ£o": "salao",
+        "salon": "salao",
+        "churras": "churrasqueira",
+        "brinquedoteca": "brinquedoteca",
+        "sauna": "sauna",
+    }
+    leisure_found = []
+    for key, canonical in leisure_keywords.items():
+        if key in lowered:
+            leisure_found.append(canonical)
+    if leisure_found:
+        result["leisure_features"] = leisure_found
 
     return result
 

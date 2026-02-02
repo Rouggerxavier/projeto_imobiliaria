@@ -10,7 +10,19 @@ from typing import Dict, Any, List
 from .state import SessionState
 
 
-CRITICAL_ORDER = ["intent", "city", "neighborhood", "property_type", "bedrooms", "parking", "budget", "timeline"]
+CRITICAL_ORDER = [
+    "intent",
+    "city",
+    "neighborhood",
+    "micro_location",
+    "property_type",
+    "bedrooms",
+    "suites",
+    "parking",
+    "budget",
+    "budget_min",
+    "timeline",
+]
 
 
 def format_price(intent: str, prop: Dict[str, Any]) -> str:
@@ -99,9 +111,10 @@ def build_summary_payload(state: SessionState) -> Dict[str, Any]:
 
     summary_json = {
         "session_id": state.session_id,
-        "lead_name": state.lead_name,
+        "lead_profile": state.lead_profile,
         "critical": critical,
         "preferences": preferences,
+        "lead_score": state.lead_score.__dict__,
         "status": "triage_completed",
     }
 
@@ -113,16 +126,21 @@ def build_summary_payload(state: SessionState) -> Dict[str, Any]:
         txt_parts.append(f"Cidade: {critical['city']}")
     if critical.get("neighborhood") is not None:
         txt_parts.append(f"Bairro: {critical['neighborhood'] or 'sem preferência'}")
+    if critical.get("micro_location"):
+        txt_parts.append(f"Micro-localização: {critical['micro_location']}")
     if critical.get("property_type"):
         txt_parts.append(f"Tipo: {critical['property_type']}")
     if critical.get("bedrooms"):
         txt_parts.append(f"Quartos: {critical['bedrooms']}")
+    if critical.get("suites"):
+        txt_parts.append(f"Suítes: {critical['suites']}")
     if critical.get("parking"):
         txt_parts.append(f"Vagas: {critical['parking']}")
     if critical.get("budget"):
         txt_parts.append(f"Orçamento máx.: R$ {critical['budget']}")
     if critical.get("timeline"):
         txt_parts.append(f"Prazo: {critical['timeline']}")
+    txt_parts.append(f"Lead score: {state.lead_score.temperature.upper()} ({state.lead_score.score})")
 
     summary_text = "Resumo da triagem:\n- " + "\n- ".join(txt_parts) if txt_parts else "Triagem concluída."
 

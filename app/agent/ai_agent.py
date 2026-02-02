@@ -68,6 +68,7 @@ class RealEstateAIAgent:
         return {
             "intent": state.intent,
             "criteria": state.criteria.__dict__,
+            "triage_fields": state.triage_fields,
             "history": state.history[-6:],  # Últimas 6 mensagens
             "stage": state.stage,
             "last_suggestions": state.last_suggestions[:5] if state.last_suggestions else [],

@@ -36,7 +36,7 @@ cp .env.example .env             # edite credenciais
 ## Variáveis de ambiente principais
 | Chave | Exemplo (default atual) | Observações |
 |-------|-------------------------|-------------|
-| `OPENAI_API_KEY` | `AIzaSyBVFzrjr-kuNee5eAipcVIWDusMsB2osU0` | Usa endpoint compatível do Gemini. |
+| `OPENAI_API_KEY` | `sua_google_api_key_aqui` | Usa endpoint compatível do Gemini. |
 | `OPENAI_MODEL` | `gemini-2.0-flash` | Modelo padrão. |
 | `OPENAI_BASE_URL` | `https://generativelanguage.googleapis.com/v1beta/openai` | Necessário para compat OpenAI. |
 | `GROQ_API_KEY` | _(vazio)_ | Opcional fallback (ex.: `ollama-local`). |
@@ -91,14 +91,15 @@ Use `session_id` para manter contexto entre mensagens.
 - Critérios marcados como `confirmed` vs `inferred`; buscas críticas usam confirmados.  
 - Sem persona fictícia; tom neutro profissional; não inventa dados fora da base/tool.
 
-## Modo "triagem-only" (MVP) 🔒
-Ative com `TRIAGE_ONLY=true` para modo de **coleta de dados pura** (sem busca/listagem).
+## Modo "triagem-only" premium 🔒
+`TRIAGE_ONLY=true` segue como modo principal: coleta rica + handoff (sem busca/listagem).
 
-### Comportamento
-- ✅ **Coleta estruturada**: uma pergunta por vez, sem repetir campos confirmados
-- ✅ **Campos críticos**: intent, city, neighborhood, property_type, bedrooms, parking, budget, timeline
-- ✅ **Preferências adicionais**: andar, vista, lazer, pet, mobiliado, etc.
-- ✅ **Resumo final**: gera texto + JSON estruturado para CRM/handoff
+### Comportamento atualizado
+- ✅ **Pergunta única por mensagem**, com variações naturais e sem repetir campos confirmados.
+- ✅ **Campos críticos**: operação, cidade (confirma se inferido), bairros + micro-localização (beira-mar/1-3 quadras), tipo, quartos/suítes mín., vagas mín., orçamento máx./mín., prazo (30d/3m/6m/12m/flex).
+- ✅ **Campos importantes** (pergunta 2 extras por padrão): condomínio máx., andar, posição solar, vista, lazer (lista), forma de pagamento/entrada, pet/mobiliado, área mín.
+- ✅ **Lead score** a cada mensagem + resumo final (JSON estruturado) para handoff.
+- ✅ **Anti-leak**: nada de SEARCH/LIST/REFINE, nem sugerir aumentar orçamento ou bairros.
 
 ### Garantias Anti-Leak (7 testes)
 - 🚫 **Nunca chama** `tools.search_properties`
@@ -109,16 +110,27 @@ Ative com `TRIAGE_ONLY=true` para modo de **coleta de dados pura** (sem busca/li
 - ✅ **Handoff automático** ao completar campos
 
 ### Schema Canônico de Campos
-| Campo | Tipo | Descrição | Modo |
-|-------|------|-----------|------|
-| `intent` | string | comprar/alugar/investir | Ambos |
-| `city` | string | Cidade (ex: Joao Pessoa) | Ambos |
-| `neighborhood` | string | Bairro (ex: Manaira) | Ambos |
-| `property_type` | string | apartamento/casa/cobertura | Ambos |
-| `bedrooms` | int | Número de quartos | Ambos |
-| `parking` | int | Número de vagas | Ambos |
-| `budget` | int | Orçamento máximo (R$) | Ambos |
-| `timeline` | string | Prazo (imediato/6 meses) | TRIAGE_ONLY |
+| Campo | Tipo | Descrição |
+|-------|------|-----------|
+| `intent` | string | comprar/alugar |
+| `city` | string | Cidade (João Pessoa pode vir inferido) |
+| `neighborhood` | string | Bairro(s) desejado(s) |
+| `micro_location` | string | beira-mar \| 1_quadra \| 2-3_quadras \| >3_quadras |
+| `property_type` | string | apartamento/casa/cobertura |
+| `bedrooms` / `suites` | int | mínimos |
+| `parking` | int | vagas mínimas |
+| `budget` / `budget_min` | int | teto/piso em R$ |
+| `timeline` | string | 30d/3m/6m/12m/flexivel |
+| `condo_max` | int | condomínio máximo |
+| `floor_pref` / `sun_pref` / `view_pref` | string | preferências |
+| `leisure_features` | list | piscina, academia, gourmet, playground, etc. |
+| `payment_type` / `entry_amount` | string/int | forma de pagamento / entrada |
+| `furnished` / `pet` | bool | mobiliado / aceita pet |
+| `lead_profile` | dict | name, phone, email |
+
+### Lead scoring & persistência
+- `compute_lead_score(state)` → `{temperature: hot|warm|cold, score: 0-100, reasons[]}`; loga `[LEAD_SCORE] ...` em cada mensagem.
+- Ao concluir triagem, salva append-only em `data/leads.jsonl` (ou `/mnt/data/leads.jsonl` se existir) com session_id, lead_profile, triage_fields e lead_score.
 
 **Nota:** Em modo normal, `city` e `neighborhood` são agrupados como `location` em alguns contextos.  
 

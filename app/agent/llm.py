@@ -735,13 +735,17 @@ def _get_question_for_field(field: str) -> str:
     questions = {
         "intent": "Você quer alugar ou comprar?",
         "location": "Qual cidade ou bairro você prefere?",
-        "city": "Qual cidade você prefere? (se ajudar, posso usar João Pessoa como base)",
-        "neighborhood": "Algum bairro preferido? Se não souber, posso seguir sem isso.",
+        "city": "Qual cidade você prefere? (posso usar João Pessoa como base)",
+        "city_confirm": "Confirma João Pessoa ou prefere outra cidade?",
+        "neighborhood": "Quais bairros você quer considerar?",
+        "micro_location": "Prefere beira-mar, 1 quadra ou 2-3 quadras da praia?",
         "budget": "Qual o orçamento máximo? Pode ser aproximado.",
         "property_type": "Prefere apartamento, casa, cobertura ou outro tipo?",
         "bedrooms": "Quantos quartos você precisa? Quer suíte?",
+        "suites": "Quantas suítes no mínimo?",
         "parking": "Quantas vagas de garagem você precisa (1, 2, 3)?",
-        "timeline": "Qual o prazo para mudar/fechar? (ex.: imediato, até 6 meses)"
+        "timeline": "Qual o prazo para mudar/fechar? (ex.: imediato, até 6 meses)",
+        "lead_name": "Qual seu nome para eu registrar aqui?"
     }
     return questions.get(field, "Pode me dar mais detalhes?")
 
@@ -783,6 +787,8 @@ def _get_fallback_decision(message: str, state_summary: Dict[str, Any], triage_o
             missing.append("intent")
         if not _filled("city") and not _filled("neighborhood"):
             missing.append("city")
+        if not _filled("neighborhood"):
+            missing.append("neighborhood")
         if not _filled("property_type"):
             missing.append("property_type")
         if not _filled("bedrooms"):
@@ -793,6 +799,7 @@ def _get_fallback_decision(message: str, state_summary: Dict[str, Any], triage_o
             missing.append("budget")
         if not _filled("timeline"):
             missing.append("timeline")
+        # micro_location e lead_name são tratados como preferências
     else:
         missing = []
         if not final_intent:
