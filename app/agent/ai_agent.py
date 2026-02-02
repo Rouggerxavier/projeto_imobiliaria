@@ -41,6 +41,7 @@ class RealEstateAIAgent:
             message: Mensagem do usuário
             state: Estado da sessão
             neighborhoods: Lista de bairros conhecidos
+            correlation_id: ID de correlação para rastreamento (opcional)
 
         Returns:
             (decision, used_llm)
@@ -72,11 +73,7 @@ class RealEstateAIAgent:
             "last_suggestions": state.last_suggestions[:5] if state.last_suggestions else [],
             "missing_fields": missing,
             "can_search": can_search,
-            "neighborhoods": neighborhoods[:20] if neighborhoods else [],  # Limita bairros
-            "triage_fields": state.triage_fields,
-            "asked_questions": state.asked_questions,
-            "last_question_key": state.last_question_key,
-            "completed": state.completed
+            "neighborhoods": neighborhoods[:20] if neighborhoods else []  # Limita bairros
         }
     
     def classify_intent(self, message: str, context: Optional[Dict] = None) -> Dict[str, Any]:
@@ -149,7 +146,7 @@ class RealEstateAIAgent:
                 temperature=0.1  # Muito baixa para extração precisa
             )
             return result
-        except Exception as e:
+        except Exception as e: 
             print(f"⚠️ Erro na extração, usando fallback: {e}")
             return self._extract_criteria_fallback(message, known_neighborhoods)
     

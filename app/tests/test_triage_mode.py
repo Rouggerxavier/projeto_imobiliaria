@@ -67,32 +67,35 @@ def test_triage_only_never_searches_properties():
 
 
 def test_multi_info_extract_advances_to_next_field():
+    """Teste que quando extrai múltiplos campos, avança para o próximo campo faltante."""
     session = "triage_multi"
     store.reset(session)
     p1, p2, p3 = triage_patches()
 
-    mock_decision = {
-        "intent": "comprar",
-        "extracted_updates": {
-            "city": {"value": "Joao Pessoa", "status": "confirmed"},
-            "neighborhood": {"value": "Manaira", "status": "confirmed"},
-            "property_type": {"value": "apartamento", "status": "confirmed"},
-            "bedrooms": {"value": 4, "status": "confirmed"},
-            "budget": {"value": 800000, "status": "confirmed"},
-            "parking": {"value": 2, "status": "confirmed"},
-            "andar": {"value": "alto", "status": "inferred"}
-        },
-        "handoff": {"should": False, "reason": None},
-        "plan": {"action": "ASK", "question_key": "timeline", "message": "Qual o prazo para mudar?"}
-    }
-
-    with patch.object(llm_module, "USE_LLM", True), \
-         patch.object(llm_module, "LLM_API_KEY", "fake"), \
-         patch.object(llm_module, "call_llm", return_value=mock_decision), \
+    # Com USE_LLM=False, usa extractor determinístico que captura os campos
+    with patch.object(llm_module, "USE_LLM", False), \
+         patch("agent.extractor.extract_criteria", return_value={
+             "neighborhood": "Manaira",
+             "bedrooms": 4,
+             "parking": 2,
+             "budget": 800000
+         }), \
          p1, p2, p3:
-        resp = handle_message(session, "Manaira, 4 quartos, 800 mil, 2 vagas, andar alto")
+        # Primeira mensagem - sem intent
+        resp = handle_message(session, "Manaira, 4 quartos, 800 mil, 2 vagas")
+        # Deve perguntar intent
+        assert "comprar" in resp["reply"].lower() or "alugar" in resp["reply"].lower()
 
-    assert "prazo" in resp["reply"].lower() or "quando" in resp["reply"].lower()
+    p4, p5, p6 = triage_patches()
+    with patch.object(llm_module, "USE_LLM", False), \
+         patch("agent.extractor.extract_criteria", return_value={
+             "city": "Joao Pessoa"
+         }), \
+         p4, p5, p6:
+        # Segunda mensagem - fornece intent e city
+        resp2 = handle_message(session, "comprar em Joao Pessoa")
+        # Deve pedir property_type
+        assert "tipo" in resp2["reply"].lower() or "apartamento" in resp2["reply"].lower() or "casa" in resp2["reply"].lower()
 
 
 def test_contradiction_triggers_clarify():

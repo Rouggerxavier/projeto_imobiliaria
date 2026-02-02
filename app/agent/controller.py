@@ -1,136 +1,22 @@
 ﻿from __future__ import annotations
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Tuple, Optional
 from .state import store, SessionState
 from .ai_agent import get_agent
 from . import tools
-from .rules import can_search_properties, missing_critical_fields, next_best_question, QUESTION_BANK
+from .rules import can_search_properties, missing_critical_fields, QUESTION_BANK
 from .dialogue import Plan
 from .llm import TRIAGE_ONLY
-from .extractor import extract_criteria
+from .extractor import enrich_with_regex
+from .presenter import (
+    format_option,
+    build_summary_payload,
+    format_handoff_message,
+)
 
-
-HUMAN_KEYWORDS = {"humano", "atendente", "corretor"}
-HUMAN_PHRASES = {"falar com alguem", "falar com uma pessoa", "pessoa de verdade", "humano de verdade"}
-NEGOTIATION_KEYWORDS = {"desconto", "negociar", "baixar preco", "consegue baixar", "melhorar preco", "faz por", "baixa pra"}
-VISIT_KEYWORDS = {"visita", "visitar", "agendar visita", "tour", "ver pessoalmente", "presencial", "virtual", "agendar", "marcar"}
-IRRITATION_KEYWORDS = {"reclamacao", "reclamação", "péssimo", "pessimo", "nao gostei", "horrivel", "ruim", "cancelar", "odio", "odiei"}
-LEGAL_KEYWORDS = {"contrato", "clausula", "cláusula", "processo", "acao judicial", "ação judicial", "advogado", "documentacao", "documentação"}
-
-CRITICAL_ORDER = ["intent", "city", "neighborhood", "property_type", "bedrooms", "parking", "budget", "timeline"]
-
-
-def _apply_extracted_updates(state: SessionState, updates: Dict[str, Any]) -> Tuple[List[str], Dict[str, Dict[str, Any]]]:
-    """Aplica updates extraídos ao estado, retornando conflitos e seus valores."""
-    conflicts: List[str] = []
-    conflict_values: Dict[str, Dict[str, Any]] = {}
-    for key, payload in (updates or {}).items():
-        if payload is None:
-            continue
-        value = payload.get("value") if isinstance(payload, dict) else payload
-        status = payload.get("status", "confirmed") if isinstance(payload, dict) else "confirmed"
-        # Intent pode vir separada
-        if key == "intent":
-            if state.intent and value and state.intent != value and state.intent in {"comprar", "alugar"}:
-                conflicts.append("intent")
-                conflict_values["intent"] = {"previous": state.intent, "new": value}
-            elif value:
-                state.intent = value
-            continue
-        prev = state.triage_fields.get(key, {})
-        prev_val = prev.get("value")
-        prev_status = prev.get("status")
-        if prev_status == "confirmed" and value is not None and prev_val not in (None, value):
-            conflicts.append(key)
-            conflict_values[key] = {"previous": prev_val, "new": value}
-            continue  # não sobrescreve; precisa clarificar
-        state.set_triage_field(key, value, status=status)
-    return conflicts, conflict_values
-
-
-def _enrich_with_regex(message: str, state: SessionState, updates: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Usa extractor determinístico para capturar campos que o LLM não trouxe.
-    Apenas preenche campos ausentes.
-    """
-    fallback = extract_criteria(message, [])
-    merged = dict(updates)
-    for k, v in fallback.items():
-        if v is None:
-            continue
-        current = merged.get(k)
-        already_set = state.triage_fields.get(k)
-        if (not current or current.get("value") is None) and not (already_set and already_set.get("status") == "confirmed"):
-            merged[k] = {"value": v, "status": "confirmed"}
-    return merged
-
-
-def _build_summary_payload(state: SessionState) -> Dict[str, Any]:
-    """Gera resumo estruturado para handoff/CRM."""
-    critical = {}
-    for field in CRITICAL_ORDER:
-        if field == "intent":
-            critical[field] = state.intent
-        elif hasattr(state.criteria, field):
-            critical[field] = getattr(state.criteria, field)
-        else:
-            critical[field] = state.triage_fields.get(field, {}).get("value")
-
-    preferences = {k: v.get("value") for k, v in state.triage_fields.items() if k not in CRITICAL_ORDER}
-
-    summary_json = {
-        "session_id": state.session_id,
-        "lead_name": state.lead_name,
-        "critical": critical,
-        "preferences": preferences,
-        "status": "triage_completed",
-    }
-
-    # Texto curto para humano
-    txt_parts = []
-    if critical.get("intent"):
-        txt_parts.append(f"Operação: {critical['intent']}")
-    if critical.get("city"):
-        txt_parts.append(f"Cidade: {critical['city']}")
-    if critical.get("neighborhood") is not None:
-        txt_parts.append(f"Bairro: {critical['neighborhood'] or 'sem preferência'}")
-    if critical.get("property_type"):
-        txt_parts.append(f"Tipo: {critical['property_type']}")
-    if critical.get("bedrooms"):
-        txt_parts.append(f"Quartos: {critical['bedrooms']}")
-    if critical.get("parking"):
-        txt_parts.append(f"Vagas: {critical['parking']}")
-    if critical.get("budget"):
-        txt_parts.append(f"Orçamento máx.: R$ {critical['budget']}")
-    if critical.get("timeline"):
-        txt_parts.append(f"Prazo: {critical['timeline']}")
-
-    summary_text = "Resumo da triagem:\n- " + "\n- ".join(txt_parts) if txt_parts else "Triagem concluída."
-
-    return {"text": summary_text, "payload": summary_json}
-
-
-def _format_price(intent: str, prop: Dict[str, Any]) -> str:
-    if intent == "alugar":
-        price = prop.get("preco_aluguel")
-        if price:
-            return f"R${price:,.0f}/mes".replace(",", ".")
-    else:
-        price = prop.get("preco_venda")
-        if price:
-            return f"R${price:,.0f}".replace(",", ".")
-    return "Consulte"
-
-
-def _format_option(idx: int, intent: str, prop: Dict[str, Any]) -> str:
-    price_txt = _format_price(intent, prop)
-    return (
-        f"{idx}) {prop.get('titulo')} - {prop.get('bairro')}/{prop.get('cidade')}\n"
-        f"   {prop.get('quartos')}q • {prop.get('vagas')} vaga(s) • {prop.get('area_m2')} m²\n"
-        f"   {price_txt} • {prop.get('descricao_curta')}"
-    )
 
 
 def _human_handoff(state: SessionState, reason: str) -> Dict[str, Any]:
+    """Processa handoff para humano usando presenter para formatar mensagem."""
     state.human_handoff = True
     summary = {
         "session_id": state.session_id,
@@ -139,15 +25,7 @@ def _human_handoff(state: SessionState, reason: str) -> Dict[str, Any]:
         "last_suggestions": state.last_suggestions,
         "reason": reason,
     }
-    replies = {
-        "pedido_humano": "Tudo bem, vou te passar para um corretor agora.",
-        "negociacao": "Vou acionar um corretor para tratar do valor e te responder rapidinho.",
-        "visita": "Vou chamar um corretor para agendar a visita. Qual horário funciona melhor?",
-        "reclamacao": "Sinto muito pela experiência. Vou passar para um corretor resolver agora.",
-        "juridico": "Posso pedir para um corretor te ajudar com essa parte contratual. Pode ser?",
-        "alta_intencao": "Vejo que você quer fechar rápido. Posso acionar um corretor para agilizar?",
-    }
-    reply = replies.get(reason, "Vou acionar um corretor humano para te ajudar melhor.")
+    reply = format_handoff_message(reason)
     return {
         "reply": reply,
         "handoff": tools.handoff_human(str(summary)),
@@ -158,50 +36,25 @@ def _human_handoff(state: SessionState, reason: str) -> Dict[str, Any]:
 def should_handoff_to_human(message: str, state: SessionState) -> Tuple[bool, str]:
     """
     Decide se deve transferir para humano usando análise de IA.
-    
-    Antes: usava keywords hardcoded
-    Agora: usa LLM para análise contextual inteligente
+
+    Usa o método should_handoff do ai_agent que já tem fallback integrado.
     """
     agent = get_agent()
-    
+
     try:
         should_handoff, reason, urgency = agent.should_handoff(message, state)
-        
+
         # Log para debug
         if should_handoff:
             print(f"[HANDOFF] Handoff detectado: {reason} (urgência: {urgency})")
-        
+
         return should_handoff, reason
     except Exception as e:
-        print(f"[WARN] Erro na decisão de handoff, usando fallback: {e}")
-        # Fallback para detecção simples por keywords em caso de erro
-        return _handoff_fallback_simple(message, state)
-
-
-def _handoff_fallback_simple(message: str, state: SessionState) -> Tuple[bool, str]:
-    """Fallback simples baseado em keywords (usado em caso de erro)"""
-    import unicodedata
-    
-    def strip_accents(text: str) -> str:
-        return unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
-    
-    low = strip_accents(message.lower())
-    
-    if any(k in low for k in ["humano", "atendente", "corretor"]):
-        return True, "pedido_humano"
-    if any(k in low for k in ["desconto", "negociar", "baixar"]):
-        return True, "negociacao"
-    if any(k in low for k in ["visita", "visitar", "agendar"]):
-        return True, "visita"
-    if any(k in low for k in ["reclamacao", "pessimo", "ruim"]):
-        return True, "reclamacao"
-    if any(k in low for k in ["contrato", "juridico", "advogado"]):
-        return True, "juridico"
-    
-    if state.criteria.budget and state.criteria.urgency == "alta" and state.intent in {"comprar", "alugar"}:
-        return True, "alta_intencao"
-    
-    return False, ""
+        print(f"[WARN] Erro na decisão de handoff, usando fallback do agent: {e}")
+        # O ai_agent.should_handoff já tem seu próprio fallback (_handoff_fallback)
+        # Então delegamos para ele em caso de erro
+        should_handoff, reason, _ = agent._handoff_fallback(message, state)
+        return should_handoff, reason
 
 
 def ask_next_question(state: SessionState) -> str | None:
@@ -283,9 +136,9 @@ def handle_message(session_id: str, message: str, name: str | None = None, corre
 
     # Aplica updates extraídos (críticos e preferências)
     # Enriquecimento determinístico para garantir captura de múltiplas infos na mesma mensagem
-    extracted_updates = _enrich_with_regex(message, state, extracted_updates)
+    extracted_updates = enrich_with_regex(message, state, extracted_updates)
 
-    conflicts, conflict_values = _apply_extracted_updates(state, extracted_updates)
+    conflicts, conflict_values = state.apply_updates(extracted_updates)
 
     if extracted:
         print(f"[CRITERIA] Critérios: {extracted}")
@@ -325,7 +178,7 @@ def handle_message(session_id: str, message: str, name: str | None = None, corre
             return {"reply": reply, "state": state.to_public_dict()}
 
         # Triagem concluída -> resumo estruturado
-        summary = _build_summary_payload(state)
+        summary = build_summary_payload(state)
         state.completed = True
         state.history.append({"role": "assistant", "text": summary["text"]})
         return {
@@ -423,7 +276,7 @@ def handle_message(session_id: str, message: str, name: str | None = None, corre
         state.last_suggestions = [r.get("id") for r in results]
         lines: List[str] = []
         for idx, prop in enumerate(results, start=1):
-            lines.append(_format_option(idx, state.intent, prop))
+            lines.append(format_option(idx, state.intent, prop))
 
         prefix = plan.message or ("Encontrei estas opções:" if len(lines) > 1 else "Achei esta opção:")
         footer = "Quer agendar visita ou refinar (bairro/quartos/orçamento)?"

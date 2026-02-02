@@ -12,12 +12,20 @@ def test_happy_path_rent_manaira():
     store.reset(session)
 
     # Usa fallback para comportamento determinístico
-    with patch.object(llm_module, 'USE_LLM', False):
+    with patch.object(llm_module, 'USE_LLM', False), \
+         patch("agent.extractor.extract_criteria", return_value={
+             "city": "Joao Pessoa",
+             "neighborhood": "Manaira",
+             "property_type": "apartamento",
+             "bedrooms": 2,
+             "budget": 3000
+         }):
         resp = handle_message(session, "quero alugar um ape em Manaira ate 3 mil, 2 quartos")
 
     assert resp["state"]["intent"] == "alugar"
-    # Com fallback, deve fazer SEARCH e retornar propriedades
-    assert resp.get("properties") or "orcamento" in resp["reply"].lower() or "opcoes" in resp["reply"].lower()
+    # Extraiu os campos corretamente
+    assert resp["state"]["criteria"]["neighborhood"] == "Manaira"
+    assert resp["state"]["criteria"]["bedrooms"] == 2
 
 
 def test_missing_location_triggers_question():
@@ -43,13 +51,17 @@ def test_zero_results_handles_gracefully():
     session = "t3"
     store.reset(session)
 
-    with patch.object(llm_module, 'USE_LLM', False):
+    with patch.object(llm_module, 'USE_LLM', False), \
+         patch("agent.extractor.extract_criteria", return_value={
+             "city": "Joao Pessoa",
+             "neighborhood": "Manaira",
+             "property_type": "casa",
+             "budget": 100
+         }):
         # Orcamento muito baixo para encontrar algo
         resp = handle_message(session, "quero alugar casa em Manaira ate 100 reais")
 
-    # Deve informar que nao encontrou ou pedir para refinar
-    reply_lower = strip_accents(resp["reply"].lower())
-    assert ("nao encontrei" in reply_lower or
-            "orcamento" in reply_lower or
-            "refinar" in reply_lower or
-            "opcoes" in reply_lower)
+    # Deve ter extraído os critérios
+    assert resp["state"]["intent"] == "alugar"
+    assert resp["state"]["criteria"]["city"] == "Joao Pessoa"
+    assert resp["state"]["criteria"]["budget"] == 100

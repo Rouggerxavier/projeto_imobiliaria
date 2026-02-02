@@ -1,7 +1,7 @@
 ﻿from __future__ import annotations
 import re
 import unicodedata
-from typing import Dict, Iterable, Optional, Set
+from typing import Dict, Iterable, Optional, Set, Any
 
 
 def _strip_accents(text: str) -> str:
@@ -152,3 +152,28 @@ def extract_criteria(message: str, known_neighborhoods: Iterable[str]) -> Dict[s
         result["urgency"] = urgency
 
     return result
+
+
+def enrich_with_regex(message: str, state, updates: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Usa extractor determinístico para capturar campos que o LLM não trouxe.
+    Apenas preenche campos ausentes.
+
+    Args:
+        message: Mensagem do usuário
+        state: Estado da sessão (SessionState)
+        updates: Updates já extraídos pelo LLM
+
+    Returns:
+        Dicionário de updates enriquecido com detecções por regex
+    """
+    fallback = extract_criteria(message, [])
+    merged = dict(updates)
+    for k, v in fallback.items():
+        if v is None:
+            continue
+        current = merged.get(k)
+        already_set = state.triage_fields.get(k)
+        if (not current or current.get("value") is None) and not (already_set and already_set.get("status") == "confirmed"):
+            merged[k] = {"value": v, "status": "confirmed"}
+    return merged

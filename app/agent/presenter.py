@@ -1,0 +1,150 @@
+"""
+Presentation Layer - Formatação de Respostas para o Usuário
+
+Este módulo encapsula toda a lógica de formatação e apresentação,
+separando as responsabilidades de apresentação da lógica de negócio.
+"""
+
+from __future__ import annotations
+from typing import Dict, Any, List
+from .state import SessionState
+
+
+CRITICAL_ORDER = ["intent", "city", "neighborhood", "property_type", "bedrooms", "parking", "budget", "timeline"]
+
+
+def format_price(intent: str, prop: Dict[str, Any]) -> str:
+    """
+    Formata o preço de um imóvel de acordo com a intenção (alugar/comprar).
+
+    Args:
+        intent: "alugar" ou "comprar"
+        prop: Dicionário com dados do imóvel
+
+    Returns:
+        String formatada do preço (ex: "R$3.500/mes" ou "R$450.000")
+    """
+    if intent == "alugar":
+        price = prop.get("preco_aluguel")
+        if price:
+            return f"R${price:,.0f}/mes".replace(",", ".")
+    else:
+        price = prop.get("preco_venda")
+        if price:
+            return f"R${price:,.0f}".replace(",", ".")
+    return "Consulte"
+
+
+def format_option(idx: int, intent: str, prop: Dict[str, Any]) -> str:
+    """
+    Formata uma opção de imóvel para apresentação ao usuário.
+
+    Args:
+        idx: Índice da opção (1, 2, 3...)
+        intent: "alugar" ou "comprar"
+        prop: Dicionário com dados do imóvel
+
+    Returns:
+        String formatada com todas as informações do imóvel
+    """
+    price_txt = format_price(intent, prop)
+    return (
+        f"{idx}) {prop.get('titulo')} - {prop.get('bairro')}/{prop.get('cidade')}\n"
+        f"   {prop.get('quartos')}q • {prop.get('vagas')} vaga(s) • {prop.get('area_m2')} m²\n"
+        f"   {price_txt} • {prop.get('descricao_curta')}"
+    )
+
+
+def format_property_list(properties: List[Dict[str, Any]], intent: str) -> str:
+    """
+    Formata uma lista de imóveis para apresentação.
+
+    Args:
+        properties: Lista de imóveis
+        intent: "alugar" ou "comprar"
+
+    Returns:
+        String com todos os imóveis formatados
+    """
+    lines: List[str] = []
+    for idx, prop in enumerate(properties, start=1):
+        lines.append(format_option(idx, intent, prop))
+
+    prefix = "Encontrei estas opções:" if len(lines) > 1 else "Achei esta opção:"
+    footer = "Quer agendar visita ou refinar (bairro/quartos/orçamento)?"
+
+    return prefix + "\n" + "\n".join(lines) + "\n" + footer
+
+
+def build_summary_payload(state: SessionState) -> Dict[str, Any]:
+    """
+    Gera resumo estruturado para handoff/CRM.
+
+    Args:
+        state: Estado da sessão
+
+    Returns:
+        Dicionário com texto formatado e payload estruturado
+    """
+    critical = {}
+    for field in CRITICAL_ORDER:
+        if field == "intent":
+            critical[field] = state.intent
+        elif hasattr(state.criteria, field):
+            critical[field] = getattr(state.criteria, field)
+        else:
+            critical[field] = state.triage_fields.get(field, {}).get("value")
+
+    preferences = {k: v.get("value") for k, v in state.triage_fields.items() if k not in CRITICAL_ORDER}
+
+    summary_json = {
+        "session_id": state.session_id,
+        "lead_name": state.lead_name,
+        "critical": critical,
+        "preferences": preferences,
+        "status": "triage_completed",
+    }
+
+    # Texto curto para humano
+    txt_parts = []
+    if critical.get("intent"):
+        txt_parts.append(f"Operação: {critical['intent']}")
+    if critical.get("city"):
+        txt_parts.append(f"Cidade: {critical['city']}")
+    if critical.get("neighborhood") is not None:
+        txt_parts.append(f"Bairro: {critical['neighborhood'] or 'sem preferência'}")
+    if critical.get("property_type"):
+        txt_parts.append(f"Tipo: {critical['property_type']}")
+    if critical.get("bedrooms"):
+        txt_parts.append(f"Quartos: {critical['bedrooms']}")
+    if critical.get("parking"):
+        txt_parts.append(f"Vagas: {critical['parking']}")
+    if critical.get("budget"):
+        txt_parts.append(f"Orçamento máx.: R$ {critical['budget']}")
+    if critical.get("timeline"):
+        txt_parts.append(f"Prazo: {critical['timeline']}")
+
+    summary_text = "Resumo da triagem:\n- " + "\n- ".join(txt_parts) if txt_parts else "Triagem concluída."
+
+    return {"text": summary_text, "payload": summary_json}
+
+
+def format_handoff_message(reason: str) -> str:
+    """
+    Retorna a mensagem apropriada para cada tipo de handoff.
+
+    Args:
+        reason: Motivo do handoff (pedido_humano, negociacao, visita, etc.)
+
+    Returns:
+        Mensagem formatada para o usuário
+    """
+    replies = {
+        "pedido_humano": "Tudo bem, vou te passar para um corretor agora.",
+        "negociacao": "Vou acionar um corretor para tratar do valor e te responder rapidinho.",
+        "visita": "Vou chamar um corretor para agendar a visita. Qual horário funciona melhor?",
+        "reclamacao": "Sinto muito pela experiência. Vou passar para um corretor resolver agora.",
+        "juridico": "Posso pedir para um corretor te ajudar com essa parte contratual. Pode ser?",
+        "alta_intencao": "Vejo que você quer fechar rápido. Posso acionar um corretor para agilizar?",
+    }
+    return replies.get(reason, "Vou acionar um corretor humano para te ajudar melhor.")

@@ -96,6 +96,49 @@ class SessionState:
             setattr(self.criteria, key, value)
             self.criteria_status[key] = status
 
+    def apply_updates(self, updates: Dict[str, Any]) -> tuple[List[str], Dict[str, Dict[str, Any]]]:
+        """
+        Aplica updates extraídos ao estado, retornando conflitos e seus valores.
+
+        Args:
+            updates: Dicionário de updates {field: {value, status} ou value}
+
+        Returns:
+            Tupla (conflicts, conflict_values) onde:
+            - conflicts: Lista de campos com conflito
+            - conflict_values: Dict com {field: {previous, new}}
+        """
+        conflicts: List[str] = []
+        conflict_values: Dict[str, Dict[str, Any]] = {}
+
+        for key, payload in (updates or {}).items():
+            if payload is None:
+                continue
+            value = payload.get("value") if isinstance(payload, dict) else payload
+            status = payload.get("status", "confirmed") if isinstance(payload, dict) else "confirmed"
+
+            # Intent pode vir separada
+            if key == "intent":
+                if self.intent and value and self.intent != value and self.intent in {"comprar", "alugar"}:
+                    conflicts.append("intent")
+                    conflict_values["intent"] = {"previous": self.intent, "new": value}
+                elif value:
+                    self.intent = value
+                continue
+
+            prev = self.triage_fields.get(key, {})
+            prev_val = prev.get("value")
+            prev_status = prev.get("status")
+
+            if prev_status == "confirmed" and value is not None and prev_val not in (None, value):
+                conflicts.append(key)
+                conflict_values[key] = {"previous": prev_val, "new": value}
+                continue  # não sobrescreve; precisa clarificar
+
+            self.set_triage_field(key, value, status=status)
+
+        return conflicts, conflict_values
+
     def to_public_dict(self) -> Dict[str, Any]:
         return {
             "session_id": self.session_id,

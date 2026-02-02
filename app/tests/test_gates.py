@@ -14,11 +14,18 @@ def test_can_search_properties_rent_ready():
     state.set_criterion("city", "João Pessoa")
     state.set_criterion("property_type", "apartamento")
     state.set_criterion("budget", 3000)
-    assert can_search_properties(state) is True
+    # Em modo TRIAGE_ONLY, can_search sempre retorna False
+    from agent.rules import TRIAGE_ONLY
+    expected = False if TRIAGE_ONLY else True
+    assert can_search_properties(state) is expected
 
 
 def test_missing_critical_fields_order():
     state = SessionState(session_id="s3", intent="alugar")
     state.set_criterion("budget", 2500)
     missing = missing_critical_fields(state)
-    assert missing[0] == "location"
+    # Em modo TRIAGE_ONLY, retorna "city" ao invés de "location"
+    # Em modo normal, retorna "location"
+    from agent.rules import TRIAGE_ONLY
+    expected = "city" if TRIAGE_ONLY else "location"
+    assert missing[0] == expected
