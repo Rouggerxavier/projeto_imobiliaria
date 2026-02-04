@@ -1,0 +1,15 @@
+```
+handle_message (TRIAGE_ONLY): caminho corrigido
+```
+**Fonte:** `app/agent/controller.py` (bloco triage).
+
+---
+
+## 14) Roadmap Técnico (curto)
+
+Sugestões realistas com base no que **já existe**:
+- **Persistência em DB**: substituir JSONL por banco (ex.: SQLite/Postgres) mantendo o payload atual (`persist_state`).
+- **Integração WhatsApp**: variáveis `WHATSAPP_*` já existem no `.env`, mas não há código que use (oportunidade clara).
+- **Telemetry/Metrics**: adicionar métricas de latência e erro por `correlation_id` nos logs.
+- **Cache persistente**: `_message_cache` é in-memory; pode migrar para Redis.
+

@@ -1,7 +1,11 @@
 from __future__ import annotations
 import os
 import asyncio
-from fastapi import FastAPI, Request
+import json
+from datetime import datetime, timedelta
+from fastapi import FastAPI, Request, Depends, HTTPException
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from app.agent.controller import handle_message
@@ -24,9 +28,8 @@ async def health():
 
 @app.on_event("startup")
 async def _startup():
-    if LLM_PREWARM:
-        # Pre-warm do modelo local para reduzir cold start.
-        await asyncio.to_thread(prewarm_llm)
+    # Prewarm desativado para evitar chamadas iniciais ao LLM.
+    return
 
 
 @app.post("/webhook")

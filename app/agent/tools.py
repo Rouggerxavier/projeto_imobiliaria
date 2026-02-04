@@ -4,6 +4,7 @@ import os
 from typing import Any, Dict, List, Optional
 
 DATA_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "properties.json")
+EXPOSE_AGENT_CONTACT = os.getenv("EXPOSE_AGENT_CONTACT", "false").lower() in ("true", "1", "yes")
 
 
 def load_properties() -> List[Dict[str, Any]]:

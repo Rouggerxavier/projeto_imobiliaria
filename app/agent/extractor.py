@@ -112,6 +112,14 @@ def extract_criteria(message: str, known_neighborhoods: Iterable[str]) -> Dict[s
     text = message
     result: Dict[str, object] = {}
 
+    lowered_plain = _strip_accents(text.lower())
+
+    # Intent explícita (comprar/alugar)
+    if "comprar" in lowered_plain or "compra" in lowered_plain or "investir" in lowered_plain:
+        result["intent"] = "comprar"
+    elif "alugar" in lowered_plain or "aluguel" in lowered_plain:
+        result["intent"] = "alugar"
+
     city = detect_city(text)
     if city:
         result["city"] = city
@@ -119,7 +127,6 @@ def extract_criteria(message: str, known_neighborhoods: Iterable[str]) -> Dict[s
     if neighborhood:
         result["neighborhood"] = neighborhood
 
-    lowered_plain = _strip_accents(text.lower())
     if "orla" in lowered_plain or "beira mar" in lowered_plain or "beira-mar" in lowered_plain or "praia" in lowered_plain:
         result["micro_location"] = "orla"
 
@@ -184,7 +191,7 @@ def extract_criteria(message: str, known_neighborhoods: Iterable[str]) -> Dict[s
     return result
 
 
-def enrich_with_regex(message: str, state, updates: Dict[str, Any]) -> Dict[str, Any]:
+def enrich_with_regex(message: str, state, updates: Dict[str, Any], known_neighborhoods: Iterable[str] | None = None) -> Dict[str, Any]:
     """
     Usa extractor determinístico para capturar campos que o LLM não trouxe.
     Apenas preenche campos ausentes.
@@ -197,13 +204,17 @@ def enrich_with_regex(message: str, state, updates: Dict[str, Any]) -> Dict[str,
     Returns:
         Dicionário de updates enriquecido com detecções por regex
     """
-    fallback = extract_criteria(message, [])
+    fallback = extract_criteria(message, known_neighborhoods or [])
     merged = dict(updates)
     for k, v in fallback.items():
         if v is None:
             continue
         current = merged.get(k)
         already_set = state.triage_fields.get(k)
+        if current and current.get("value") == v and current.get("status") != "confirmed":
+            merged[k]["status"] = "confirmed"
+            merged[k]["raw_text"] = merged[k].get("raw_text") or message
+            continue
         if (not current or current.get("value") is None) and not (already_set and already_set.get("status") == "confirmed"):
-            merged[k] = {"value": v, "status": "confirmed"}
+            merged[k] = {"value": v, "status": "confirmed", "raw_text": message}
     return merged

@@ -1,0 +1,17 @@
+{
+  "last_reset_date": "2026-02-04",
+  "agents": {
+    "agent_paula": {
+      "assigned_today": 39,
+      "last_assigned_at": "2026-02-04T14:17:00.114288Z"
+    },
+    "agent_ana": {
+      "assigned_today": 8,
+      "last_assigned_at": "2026-02-04T14:17:00.132018Z"
+    },
+    "agent_joao": {
+      "assigned_today": 8,
+      "last_assigned_at": "2026-02-04T14:17:00.151686Z"
+    }
+  }
+}

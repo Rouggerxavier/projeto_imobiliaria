@@ -6,6 +6,7 @@ separando as responsabilidades de apresentação da lógica de negócio.
 """
 
 from __future__ import annotations
+import os
 from typing import Dict, Any, List
 from .state import SessionState
 
@@ -88,12 +89,13 @@ def format_property_list(properties: List[Dict[str, Any]], intent: str) -> str:
     return prefix + "\n" + "\n".join(lines) + "\n" + footer
 
 
-def build_summary_payload(state: SessionState) -> Dict[str, Any]:
+def build_summary_payload(state: SessionState, assigned_agent: Dict[str, Any] = None) -> Dict[str, Any]:
     """
     Gera resumo estruturado para handoff/CRM.
 
     Args:
         state: Estado da sessão
+        assigned_agent: Informações do corretor atribuído (opcional)
 
     Returns:
         Dicionário com texto formatado e payload estruturado
@@ -116,9 +118,10 @@ def build_summary_payload(state: SessionState) -> Dict[str, Any]:
         "preferences": preferences,
         "lead_score": state.lead_score.__dict__,
         "status": "triage_completed",
+        "intent_stage": state.intent_stage,
     }
 
-    # Texto curto para humano
+    # Texto curto para humano (bullets)
     txt_parts = []
     if critical.get("intent"):
         txt_parts.append(f"Operação: {critical['intent']}")
@@ -140,23 +143,50 @@ def build_summary_payload(state: SessionState) -> Dict[str, Any]:
         txt_parts.append(f"Orçamento máx.: R$ {critical['budget']}")
     if critical.get("timeline"):
         txt_parts.append(f"Prazo: {critical['timeline']}")
-    txt_parts.append(f"Lead score: {state.lead_score.temperature.upper()} ({state.lead_score.score})")
+    if state.intent_stage and state.intent_stage != "unknown":
+        friendly_stage = {
+            "researching": "Fase: pesquisando",
+            "ready_to_visit": "Fase: pronto para visitar",
+            "negotiating": "Fase: negociando",
+        }.get(state.intent_stage, f"Fase: {state.intent_stage}")
+        txt_parts.append(friendly_stage)
 
-    summary_text = "Resumo da triagem:\n- " + "\n- ".join(txt_parts) if txt_parts else "Triagem concluída."
+    # Monta o resumo com os critérios do cliente
+    if txt_parts:
+        summary_text = "Resumo da triagem:\n- " + "\n- ".join(txt_parts)
+        transition = format_handoff_message("final", assigned_agent=assigned_agent)
+        summary_text += f"\n\n{transition}"
+    else:
+        summary_text = format_handoff_message("final", assigned_agent=assigned_agent)
 
     return {"text": summary_text, "payload": summary_json}
 
 
-def format_handoff_message(reason: str) -> str:
+def format_handoff_message(reason: str, assigned_agent: Dict[str, Any] | None = None) -> str:
     """
     Retorna a mensagem apropriada para cada tipo de handoff.
 
     Args:
         reason: Motivo do handoff (pedido_humano, negociacao, visita, etc.)
+        assigned_agent: opcional, dados do corretor já atribuído
 
     Returns:
         Mensagem formatada para o usuário
     """
+    expose_contact = os.getenv("EXPOSE_AGENT_CONTACT", "false").lower() in ("true", "1", "yes")
+    agent_name = assigned_agent.get("name") if assigned_agent else None
+
+    if reason == "final":
+        if expose_contact and agent_name:
+            return (
+                f"Perfeito, obrigado! Vou repassar essas informações para o(a) corretor(a) {agent_name}, "
+                "que vai entrar em contato por aqui para te enviar opções dentro do seu perfil."
+            )
+        return (
+            "Perfeito, obrigado! Vou repassar essas informações para um corretor, "
+            "que vai entrar em contato por aqui para te enviar opções dentro do seu perfil."
+        )
+
     replies = {
         "pedido_humano": "Tudo bem, vou te passar para um corretor agora.",
         "negociacao": "Vou acionar um corretor para tratar do valor e te responder rapidinho.",

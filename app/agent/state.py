@@ -3,6 +3,7 @@ import time
 import unicodedata
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any, Tuple
+import time
 
 
 @dataclass
@@ -48,6 +49,7 @@ class SessionState:
     session_id: str
     intent: Optional[str] = None  # comprar|alugar
     stage: str = "inicio"
+    intent_stage: str = "unknown"  # researching|ready_to_visit|negotiating|unknown
     criteria: LeadCriteria = field(default_factory=LeadCriteria)
     criteria_status: Dict[str, str] = field(default_factory=dict)  # confirmed|inferred
     triage_fields: Dict[str, Dict[str, Any]] = field(default_factory=dict)  # value|status|source|updated_at
@@ -65,6 +67,9 @@ class SessionState:
     lead_name: Optional[str] = None
     history: List[Dict[str, str]] = field(default_factory=list)
     random_seed: Optional[int] = None
+    engagement_notes: List[str] = field(default_factory=list)
+    message_index: int = 0  # incremental turn id within the session
+    last_activity_at: float = field(default_factory=lambda: time.time())
 
     # === Normalização helpers ===
     def _now(self) -> float:
@@ -220,6 +225,10 @@ class SessionState:
         key, value = self._apply_alias(key, value)
         self.set_criterion(key, value, status=status, source=source)
 
+    def set_current_turn(self, turn_id: int) -> None:
+        self.message_index = turn_id
+        self.last_activity_at = self._now()
+
     def apply_updates(self, updates: Dict[str, Any]) -> tuple[List[str], Dict[str, Dict[str, Any]]]:
         """
         Aplica updates extraídos ao estado, retornando conflitos e valores.
@@ -227,6 +236,7 @@ class SessionState:
         """
         conflicts: List[str] = []
         conflict_values: Dict[str, Dict[str, Any]] = {}
+        current_turn = self.message_index or 0
 
         for key, payload in (updates or {}).items():
             if payload is None:
@@ -234,14 +244,33 @@ class SessionState:
             raw_value = payload.get("value") if isinstance(payload, dict) else payload
             status = payload.get("status", "confirmed") if isinstance(payload, dict) else "confirmed"
             source = payload.get("source", "llm") if isinstance(payload, dict) else "llm"
+            raw_text = payload.get("raw_text", None) if isinstance(payload, dict) else None
+            # Se veio texto explícito do usuário para city/neighborhood, considerar confirmado
+            if raw_text and key in {"city", "neighborhood"} and status != "confirmed":
+                status = "confirmed"
 
             if key in {"lead_name", "name"}:
-                if raw_value and not self.lead_profile.get("name"):
-                    self.lead_profile["name"] = raw_value
+                if raw_value:
+                    cleaned = str(raw_value).strip()
+                    if cleaned:
+                        self.lead_profile["name"] = cleaned
                 continue
             if key in {"phone", "email"}:
                 if raw_value:
                     self.lead_profile[key] = raw_value
+                continue
+            if key == "intent_stage":
+                if raw_value:
+                    norm_val = str(raw_value)
+                    self.intent_stage = norm_val
+                    self.triage_fields["intent_stage"] = {
+                        "value": norm_val,
+                        "status": status,
+                        "source": source,
+                        "updated_at": self._now(),
+                        "turn_id": current_turn,
+                        "raw_text": raw_text or str(raw_value),
+                    }
                 continue
             if key == "intent" or key == "operation":
                 if status == "override" and raw_value:
@@ -257,13 +286,26 @@ class SessionState:
             prev = self.triage_fields.get(alias_key, {})
             prev_val = prev.get("value")
             prev_status = prev.get("status")
+            prev_turn = prev.get("turn_id")
 
-            if prev_status == "confirmed" and norm_value is not None and prev_val not in (None, norm_value):
+            if (
+                prev_status == "confirmed"
+                and norm_value is not None
+                and prev_val not in (None, norm_value)
+            ):
                 conflicts.append(alias_key)
-                conflict_values[alias_key] = {"previous": prev_val, "new": norm_value}
+                conflict_values[alias_key] = {
+                    "previous": prev_val,
+                    "new": norm_value,
+                    "previous_turn_id": prev_turn,
+                    "new_turn_id": current_turn,
+                }
                 continue
 
             self.set_criterion(alias_key, norm_value, status=status, source=source)
+            # enriquece metadados
+            self.triage_fields[alias_key]["turn_id"] = current_turn
+            self.triage_fields[alias_key]["raw_text"] = raw_text or str(raw_value)
 
         return conflicts, conflict_values
 
@@ -271,6 +313,7 @@ class SessionState:
         return {
             "session_id": self.session_id,
             "intent": self.intent,
+            "intent_stage": self.intent_stage,
             "stage": self.stage,
             "criteria": self.criteria.__dict__,
             "criteria_status": self.criteria_status,
@@ -286,6 +329,7 @@ class SessionState:
             "inferred_criteria": self.get_inferred_criteria(),
             "last_suggestions": self.last_suggestions,
             "human_handoff": self.human_handoff,
+            "engagement_notes": self.engagement_notes,
         }
 
 

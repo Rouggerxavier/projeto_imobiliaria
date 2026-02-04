@@ -43,6 +43,20 @@ def compute_lead_score(state: SessionState) -> Dict[str, object]:
         score += 5
         reasons.append("timeline_12m")
 
+    # Intent stage (engajamento)
+    intent_stage = getattr(state, "intent_stage", "unknown")
+    if intent_stage == "ready_to_visit":
+        score += 8
+        reasons.append("intent_stage_ready_to_visit")
+    elif intent_stage == "negotiating":
+        score += 8
+        reasons.append("intent_stage_negotiating")
+    elif intent_stage == "researching":
+        if tl not in {"30d", "3m"}:
+            score -= 5
+        reasons.append("intent_stage_researching")
+
+    score = max(0, score)
     score = min(score, 100)
 
     if score >= 70:

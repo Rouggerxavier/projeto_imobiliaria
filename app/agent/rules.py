@@ -15,6 +15,14 @@ def _stable_rng(session_id: str, salt: str = "") -> random.Random:
     return random.Random(seed)
 
 
+def choose_variant(session_id: str, key: str, variants: List[str]) -> str:
+    """
+    Retorna variante estável por sessão/tema para manter testabilidade.
+    """
+    rng = _stable_rng(session_id, salt=key)
+    return rng.choice(variants)
+
+
 def has_location(state: SessionState) -> bool:
     return bool(state.criteria.neighborhood or state.criteria.city)
 
@@ -133,21 +141,21 @@ def missing_critical_fields(state: SessionState) -> List[str]:
 
 QUESTION_BANK: Dict[str, List[str]] = {
     "intent": [
-        "Você quer comprar ou alugar?",
-        "Só pra confirmar: quer comprar ou alugar?",
-        "Estamos falando de comprar ou de alugar?",
+        "Prefere comprar ou alugar? Posso ajudar nos dois.",
+        "Só pra alinhar: quer comprar ou alugar?",
+        "Me conta: é compra ou aluguel que você busca?",
     ],
     "city": [
-        "Qual cidade você prefere? Posso usar João Pessoa como base se fizer sentido.",
-        "Pra começar bem: qual cidade você quer focar?",
+        "Vamos focar em João Pessoa/PB, tudo bem pra você?",
+        "Posso seguir com João Pessoa/PB como cidade base. Confirma?",
     ],
     "city_confirm": [
         "Entendi João Pessoa como padrão. Confirma ou prefere outra cidade?",
         "Posso seguir com João Pessoa ou quer trocar a cidade?",
     ],
     "neighborhood": [
-        "Qual bairro você deseja? Pode citar 1–3 opções.",
-        "Tem algum bairro em mente? Pode listar rapidamente.",
+        "Qual bairro você deseja em João Pessoa? Pode citar 1–3 opções.",
+        "Tem algum bairro em mente por aqui em João Pessoa? Pode listar rapidinho.",
     ],
     "micro_location": [
         "Quer ficar beira-mar, a 1 quadra ou 2-3 quadras da praia?",
@@ -204,22 +212,94 @@ QUESTION_BANK: Dict[str, List[str]] = {
     ],
 }
 
+# Microcopy com motivo+pergunta (uma só interrogação)
+MICROCOPY_VARIANTS: Dict[str, List[str]] = {
+    "budget": [
+        "Pra eu não te mandar opções fora do seu perfil: qual teto de orçamento você quer considerar?",
+        "Só pra eu calibrar bem as opções: até quanto você quer chegar no orçamento?",
+        "Pra filtrar direitinho: qual é o valor máximo que faz sentido pra você?",
+    ],
+    "neighborhood": [
+        "Pra sugerir algo no seu raio de interesse: qual bairro você quer priorizar em João Pessoa?",
+        "Pra focar onde faz sentido pra você: qual bairro prefere começar?",
+        "Pra não sair da sua região-alvo: quais bairros você quer considerar primeiro?",
+    ],
+    "timeline": [
+        "Pra ajustar urgência e agenda: qual prazo você tem em mente (30d, 3m, 6m, 12m, flexível)?",
+        "Pra organizar o ritmo das próximas etapas: em quanto tempo quer avançar (30d, 3m, 6m, 12m ou flexível)?",
+        "Pra alinhar expectativa de tempo: prefere algo para 30 dias, 3 meses, 6 meses, 12 meses ou flexível?",
+    ],
+    "condo_max": [
+        "Condomínio pesa no custo fixo: qual valor mensal máximo te deixa confortável?",
+        "Pra evitar surpresas no boleto: até quanto de condomínio por mês você aceita?",
+        "Pra caber bem no custo mensal: qual é o teto de condomínio que faz sentido pra você?",
+    ],
+    "payment_type": [
+        "Pra ajustar às formas de pagamento: você pretende financiar, usar FGTS ou pagar à vista?",
+        "Pra alinhar viabilidade: vai ser financiamento, FGTS ou pagamento à vista?",
+        "Pra eu considerar as condições certas: qual formato de pagamento você prefere (financiamento/FGTS/à vista)?",
+    ],
+    "intent_stage": [
+        "Você está mais na fase de pesquisar, ou pretende visitar opções nas próximas semanas?",
+        "Hoje você está só sondando, ou já quer marcar visitas em breve?",
+        "Prefere seguir pesquisando ou já quer agendar visitas nas próximas semanas?",
+    ],
+}
+
 
 def choose_question(key: str, state: SessionState) -> Optional[str]:
-    variants = QUESTION_BANK.get(key)
+    # Microcopy prioriza variantes com motivo+pergunta
+    variants = MICROCOPY_VARIANTS.get(key) or QUESTION_BANK.get(key)
     if not variants:
         return None
-    rng = _stable_rng(state.session_id, salt=key)
-    return rng.choice(variants)
+    return choose_variant(state.session_id, key, variants)
+
+
+def _intent_stage_ready(state: SessionState) -> bool:
+    if state.intent_stage != "unknown":
+        return False
+    has_location = bool(state.criteria.neighborhood or state.criteria.city)
+    budget_ok = has_budget(state)
+    has_bedrooms = state.criteria.bedrooms is not None
+    critical_filled = sum(
+        1
+        for val in [
+            state.criteria.neighborhood,
+            state.criteria.city,
+            state.criteria.budget,
+            state.criteria.bedrooms,
+            state.criteria.property_type,
+        ]
+        if val
+    )
+    return budget_ok and (has_bedrooms or has_location) and critical_filled >= 2
 
 
 def next_best_question_key(state: SessionState) -> Optional[str]:
     missing = missing_critical_fields(state)
+
+    # Sempre priorizar micro_location quando inferido/orla
+    if "micro_location" in missing and "micro_location" not in state.asked_questions:
+        return "micro_location"
+
+    # Pergunta de estágio de intenção pode entrar antes de campos menos críticos (ex.: parking/timeline)
+    gating_blockers = {"intent", "city", "neighborhood", "property_type", "budget", "bedrooms", "micro_location"}
+    if (
+        _intent_stage_ready(state)
+        and "intent_stage" not in state.asked_questions
+        and not (gating_blockers & set(missing))
+    ):
+        return "intent_stage"
+
     for key in missing:
         if key not in state.asked_questions:
             return key
     if missing:
         return missing[0]
+
+    # Nome obrigatório antes de concluir
+    if not state.lead_profile.get("name") and "lead_name" not in state.asked_questions:
+        return "lead_name"
 
     # Campos importantes extras (pegar 2–4 no máximo: faremos 1 de cada vez)
     for key in PREFERENCE_ORDER:

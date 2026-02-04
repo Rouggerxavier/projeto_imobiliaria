@@ -1,5 +1,6 @@
 from __future__ import annotations
 from typing import Dict, Any, List, Tuple, Optional
+import time
 from .state import store, SessionState
 from .ai_agent import get_agent
 from . import tools
@@ -14,6 +15,7 @@ from .rules import (
 )
 from .dialogue import Plan
 from .llm import TRIAGE_ONLY
+from . import llm as llm_module
 from .extractor import enrich_with_regex
 from .presenter import (
     format_option,
@@ -22,11 +24,17 @@ from .presenter import (
 )
 from .scoring import compute_lead_score
 from .persistence import persist_state
+from . import persistence
+from .router import route_lead
+from .quality import compute_quality_score
 
 
 AFFIRMATIVE = {"sim", "s", "pode", "claro", "ok", "yes", "isso", "perfeito"}
 NEGATIVE = {"nao", "não", "n", "no", "negativo"}
 BOOL_KEYS = {"pet", "furnished"}
+GREETINGS = {"bom dia", "boa tarde", "boa noite", "olá", "ola", "oi", "e aí", "eai"}
+INTENT_KEYWORDS = {"comprar", "compra", "alugar", "aluguel", "investir"}
+GENERIC_NAMES = {"ok", "ola", "olá", "oi", "hi", "hello", "tudo bem"}
 
 
 def _human_handoff(state: SessionState, reason: str) -> Dict[str, Any]:
@@ -87,6 +95,38 @@ def _short_reply_updates(message: str, state: SessionState) -> Dict[str, Dict[st
         updates[lk] = {"value": True if is_yes else False, "status": "confirmed", "source": "user"}
         return updates
 
+    if lk == "lead_name":
+        if msg:
+            cleaned = msg
+            for prefix in ["meu nome e", "meu nome é", "me chamo", "sou ", "nome ", "eu sou", "aqui é", "aqui e"]:
+                if cleaned.startswith(prefix):
+                    cleaned = cleaned[len(prefix):].strip()
+            updates["lead_name"] = {"value": cleaned.strip().title(), "status": "confirmed", "source": "user", "raw_text": message}
+            return updates
+
+    if lk in {"intent", "operation"}:
+        if any(token in msg for token in {"comprar", "compra"}):
+            updates["intent"] = {"value": "comprar", "status": "confirmed", "source": "user"}
+            return updates
+        if any(token in msg for token in {"alugar", "aluguel"}):
+            updates["intent"] = {"value": "alugar", "status": "confirmed", "source": "user"}
+            return updates
+        if is_yes and state.intent:
+            updates["intent"] = {"value": state.intent, "status": "confirmed", "source": "user"}
+            return updates
+
+    if lk == "intent_stage":
+        stage = None
+        if any(token in msg for token in {"olhando", "pesquis", "só olhando", "so olhando", "curioso"}):
+            stage = "researching"
+        elif any(token in msg for token in {"visita", "visitar", "marcar", "agendar", "agenda", "próximas semanas", "proximas semanas", "rápido", "rapido"}):
+            stage = "ready_to_visit"
+        elif "negoci" in msg:
+            stage = "negotiating"
+        if stage:
+            updates["intent_stage"] = {"value": stage, "status": "confirmed", "source": "user"}
+            return updates
+
     return updates
 
 
@@ -110,19 +150,68 @@ def _question_text_for_key(key: Optional[str], state: SessionState) -> str:
     return QUESTION_BANK.get(key, ["Pode me dar mais detalhes?"])[0]
 
 
+def _prepend_greeting_if_needed(message: str, reply: str) -> str:
+    low = message.lower()
+    if any(g in low for g in GREETINGS):
+        if not reply.lower().startswith(("bom dia", "boa tarde", "boa noite", "oi", "olá", "ola")):
+            return "Bom dia! " + reply if "dia" in low else "Olá! " + reply
+    return reply
+
+
+def _should_reset_session(state: SessionState, message: str) -> bool:
+    low = message.lower()
+    has_greeting = any(g in low for g in GREETINGS)
+    has_intent_keyword = any(k in low for k in INTENT_KEYWORDS)
+    completed = getattr(state, "completed", False)
+    stale = (state.last_activity_at and (time.time() - state.last_activity_at) > 3 * 3600)
+    return (completed and has_greeting and has_intent_keyword) or stale
+
+
+def _is_valid_name(name: Optional[str]) -> bool:
+    if not name:
+        return False
+    cleaned = str(name).strip().lower()
+    if cleaned in GENERIC_NAMES or len(cleaned) < 3:
+        return False
+    return True
+
+
 def handle_message(session_id: str, message: str, name: str | None = None, correlation_id: str | None = None) -> Dict[str, Any]:
     """
     Processa mensagem do cliente (máx 1 chamada LLM).
     """
     agent = get_agent()
     state = store.get(session_id)
+    # Reset heurístico para nova conversa após conclusão
+    if _should_reset_session(state, message):
+        preserved_profile = state.lead_profile.copy()
+        print(f"[SESSION_RESET] reason=completed_or_stale correlation={correlation_id}")
+        store.reset(session_id)
+        state = store.get(session_id)
+        state.lead_profile.update(preserved_profile)
+
+    # Evita duplicar conclusão/persistência se já finalizado
+    if state.completed:
+        reply = "Triagem já foi concluída. Um corretor vai entrar em contato por aqui."
+        return {"reply": reply, "state": state.to_public_dict()}
+
+    # Controle de turnos/atividade
+    state.set_current_turn(state.message_index + 1)
     triage_only = TRIAGE_ONLY
+
+    low_msg = message.lower()
+    if any(k in low_msg for k in ["baixar o preco", "baixar o preço", "desconto", "negociar", "negociação", "negociacao"]):
+        return _human_handoff(state, reason="negociacao")
 
     if name and not state.lead_profile.get("name"):
         state.lead_profile["name"] = name
         state.lead_name = name
 
     state.history.append({"role": "user", "text": message})
+
+    # Default city: assume João Pessoa/PB as base (inferred) to evitar perguntas robóticas
+    if not state.criteria.city and "city" not in state.triage_fields:
+        state.set_triage_field("city", "Joao Pessoa", status="inferred", source="default")
 
     # Heurística para respostas curtas (sim/não)
     user_short_updates = _short_reply_updates(message, state)
@@ -157,7 +246,13 @@ def handle_message(session_id: str, message: str, name: str | None = None, corre
         print(f"[INTENT] Intent: {new_intent}")
 
     # Merge updates: regex enrichment + short replies
-    extracted_updates = enrich_with_regex(message, state, extracted_updates)
+    extracted_updates = enrich_with_regex(message, state, extracted_updates, known_neighborhoods=neighborhoods)
+    if "neighborhood" in extracted_updates:
+        nb = extracted_updates["neighborhood"]
+        if isinstance(nb, dict):
+            nb["status"] = "confirmed"
+            nb["source"] = nb.get("source", "user")
+            nb["raw_text"] = nb.get("raw_text") or message
     if user_short_updates:
         extracted_updates.update(user_short_updates)
 
@@ -166,12 +261,27 @@ def handle_message(session_id: str, message: str, name: str | None = None, corre
     if extracted:
         print(f"[CRITERIA] Critérios: {extracted}")
 
+    # Saída amigável no primeiro turno apenas quando a mensagem é só cumprimento/genérica
+    if state.message_index == 1:
+        low = message.lower()
+        keywords = {"comprar", "alugar", "ap", "apartamento", "casa", "bairro", "cidade", "visitar", "orc", "budget", "r$", "vaga", "quarto", "mil"}
+        has_digits = any(ch.isdigit() for ch in low)
+        criteria_empty = all(v is None for v in state.criteria.__dict__.values())
+        if (not llm_module.USE_LLM) and criteria_empty and not state.intent and not has_digits and not any(k in low for k in keywords):
+            greeting_reply = _prepend_greeting_if_needed(message, "Com o que posso te ajudar?")
+            state.history.append({"role": "assistant", "text": greeting_reply})
+            return {"reply": greeting_reply, "state": state.to_public_dict()}
+
     # Aplica lead scoring a cada mensagem
     score = compute_lead_score(state)
     state.lead_score.temperature = score["temperature"]
     state.lead_score.score = score["score"]
     state.lead_score.reasons = score["reasons"]
     print(f"[LEAD_SCORE] score={score['score']} temp={score['temperature']} reasons={score['reasons']} correlation={correlation_id}")
+
+    # Aplica quality scoring
+    quality = compute_quality_score(state)
+    print(f"[QUALITY_SCORE] score={quality['score']} grade={quality['grade']} completeness={quality['completeness']} confidence={quality['confidence']} reasons={quality['reasons']} correlation={correlation_id}")
 
     # Handoff (regras IA + decisão)
     if handoff_info.get("should"):
@@ -186,7 +296,14 @@ def handle_message(session_id: str, message: str, name: str | None = None, corre
             vals = conflict_values.get(key, {})
             prev_val = vals.get("previous") if vals else state.triage_fields.get(key, {}).get("value")
             new_val = vals.get("new") if vals else extracted_updates.get(key, {}).get("value")
-            question = f"Notei duas respostas diferentes para {key}: {prev_val} vs {new_val}. Qual vale?"
+            prev_turn = vals.get("previous_turn_id")
+            new_turn = vals.get("new_turn_id")
+            question = (
+                f"Aqui ficou registrado {prev_val} nesta conversa"
+                f"{' (turno ' + str(prev_turn) + ')' if prev_turn is not None else ''}."
+                f" Agora você disse {new_val}"
+                f"{' (turno ' + str(new_turn) + ')' if new_turn is not None else ''}. Qual vale?"
+            )
             state.last_question_key = key
             if key not in state.asked_questions:
                 state.asked_questions.append(key)
@@ -201,20 +318,99 @@ def handle_message(session_id: str, message: str, name: str | None = None, corre
             state.last_question_key = next_key
             if next_key and next_key not in state.asked_questions:
                 state.asked_questions.append(next_key)
-            reply = question
+
+            reply = _prepend_greeting_if_needed(message, question)
             if state.fallback_reason:
-                reply = f"Vou seguir no modo simples: {question}"
+                reply = f"Vou seguir no modo simples: {reply}"
             state.history.append({"role": "assistant", "text": reply})
             return {"reply": reply, "state": state.to_public_dict()}
 
-        # Triagem concluída
-        summary = build_summary_payload(state)
+        # Triagem concluída (sem campos missing)
+        # Roteamento automático de lead para corretor
+        if not _is_valid_name(state.lead_profile.get("name")):
+            name_q = "Perfeito, já entendi seu perfil. Pra eu repassar certinho para o corretor, qual seu nome?"
+            state.last_question_key = "lead_name"
+            if "lead_name" not in state.asked_questions:
+                state.asked_questions.append("lead_name")
+            state.history.append({"role": "assistant", "text": name_q})
+            return {"reply": name_q, "state": state.to_public_dict()}
+
+        routing_result = route_lead(state, correlation_id=correlation_id)
+        assigned_agent_info = None
+
+        if routing_result:
+            assigned_agent_info = {
+                "id": routing_result.agent_id,
+                "name": routing_result.agent_name,
+                "whatsapp": routing_result.whatsapp if tools.EXPOSE_AGENT_CONTACT else None,
+                "score": routing_result.score,
+                "reasons": routing_result.reasons,
+                "fallback": routing_result.fallback
+            }
+
+        # Gera summary com informação do corretor atribuído
+        summary = build_summary_payload(state, assigned_agent=assigned_agent_info)
         summary["payload"]["lead_score"] = state.lead_score.__dict__
+
+        # Adiciona quality score ao payload
+        quality = compute_quality_score(state)
+        summary["payload"]["quality_score"] = quality
+
+        if assigned_agent_info:
+            summary["payload"]["assigned_agent"] = assigned_agent_info
+            summary["payload"]["routing"] = {
+                "strategy": routing_result.strategy,
+                "evaluated_agents_count": routing_result.evaluated_agents_count
+            }
+
         state.completed = True
         persist_state(state)
-        state.history.append({"role": "assistant", "text": summary["text"]})
+
+        # Persistência pipeline expandida
+        import uuid
+        lead_id = uuid.uuid4().hex
+        now_ts = time.time()
+        completed_at = now_ts
+        created_at = state.last_activity_at or now_ts
+        lead_record = {
+            "lead_id": lead_id,
+            "session_id": state.session_id,
+            "created_at": created_at,
+            "completed_at": completed_at,
+            "lead_profile": state.lead_profile,
+            "criteria": state.criteria.__dict__,
+            "triage_fields": state.triage_fields,
+            "lead_score": state.lead_score.__dict__,
+            "quality_score": quality,
+            "assigned_agent": assigned_agent_info,
+            "flags": {
+                "is_completed": True,
+                "is_hot": state.lead_score.temperature == "hot",
+                "needs_followup": quality.get("grade") != "A",
+            },
+        }
+        persistence.append_lead(lead_record)
+        if state.lead_profile.get("name"):
+            persistence.update_lead_index(state.lead_profile["name"], lead_id)
+        if state.lead_score.temperature == "hot":
+            event = {
+                "type": "HOT_LEAD",
+                "lead_id": lead_id,
+                "at": completed_at,
+                "session_id": state.session_id,
+                "name": state.lead_profile.get("name"),
+                "neighborhood": state.criteria.neighborhood,
+                "budget": state.criteria.budget,
+                "quality_grade": quality.get("grade"),
+                "temperature": state.lead_score.temperature,
+            }
+            print(f"[NOTIFY] HOT_LEAD lead_id={lead_id} name={state.lead_profile.get('name')} neighborhood={state.criteria.neighborhood} budget={state.criteria.budget}")
+            persistence.append_event(event)
+
+        reply = _prepend_greeting_if_needed(message, summary["text"])
+        state.history.append({"role": "assistant", "text": reply})
         return {
-            "reply": summary["text"],
+            "reply": reply,
             "state": state.to_public_dict(),
             "summary": summary["payload"],
             "handoff": tools.handoff_human(str(summary["payload"]))
