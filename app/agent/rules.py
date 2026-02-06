@@ -116,8 +116,6 @@ def missing_critical_fields(state: SessionState) -> List[str]:
     city_val = _value(state, "city")
     if not city_val:
         missing.append("city")
-    elif _status(state, "city") == "inferred":
-        missing.append("city_confirm")
 
     if not _value(state, "neighborhood"):
         missing.append("neighborhood")
@@ -146,16 +144,11 @@ QUESTION_BANK: Dict[str, List[str]] = {
         "Me conta: é compra ou aluguel que você busca?",
     ],
     "city": [
-        "Vamos focar em João Pessoa/PB, tudo bem pra você?",
-        "Posso seguir com João Pessoa/PB como cidade base. Confirma?",
-    ],
-    "city_confirm": [
-        "Entendi João Pessoa como padrão. Confirma ou prefere outra cidade?",
-        "Posso seguir com João Pessoa ou quer trocar a cidade?",
+        "Em qual cidade você quer procurar o imóvel?",
     ],
     "neighborhood": [
-        "Qual bairro você deseja em João Pessoa? Pode citar 1–3 opções.",
-        "Tem algum bairro em mente por aqui em João Pessoa? Pode listar rapidinho.",
+        "Em qual bairro você prefere?",
+        "Qual bairro você quer priorizar?",
     ],
     "micro_location": [
         "Quer ficar beira-mar, a 1 quadra ou 2-3 quadras da praia?",
@@ -220,7 +213,7 @@ MICROCOPY_VARIANTS: Dict[str, List[str]] = {
         "Pra filtrar direitinho: qual é o valor máximo que faz sentido pra você?",
     ],
     "neighborhood": [
-        "Pra sugerir algo no seu raio de interesse: qual bairro você quer priorizar em João Pessoa?",
+        "Pra sugerir algo no seu raio de interesse: qual bairro você quer priorizar?",
         "Pra focar onde faz sentido pra você: qual bairro prefere começar?",
         "Pra não sair da sua região-alvo: quais bairros você quer considerar primeiro?",
     ],
@@ -248,11 +241,29 @@ MICROCOPY_VARIANTS: Dict[str, List[str]] = {
 
 
 def choose_question(key: str, state: SessionState) -> Optional[str]:
+    if key == "city":
+        if _should_offer_metro_city_question(state):
+            return "Você quer procurar em João Pessoa ou em Cabedelo?"
+        return (QUESTION_BANK.get("city") or ["Em qual cidade você quer procurar o imóvel?"])[0]
+    if key == "neighborhood":
+        city = _value(state, "city")
+        if city:
+            return f"Em qual bairro de {city} você prefere?"
     # Microcopy prioriza variantes com motivo+pergunta
     variants = MICROCOPY_VARIANTS.get(key) or QUESTION_BANK.get(key)
     if not variants:
         return None
     return choose_variant(state.session_id, key, variants)
+
+
+def _should_offer_metro_city_question(state: SessionState) -> bool:
+    if _value(state, "city") or _value(state, "neighborhood"):
+        return False
+    if not state.intent:
+        return False
+    if "city" in state.asked_questions:
+        return False
+    return True
 
 
 def _intent_stage_ready(state: SessionState) -> bool:
@@ -277,6 +288,9 @@ def _intent_stage_ready(state: SessionState) -> bool:
 
 def next_best_question_key(state: SessionState) -> Optional[str]:
     missing = missing_critical_fields(state)
+
+    if "city" in missing:
+        return "city"
 
     # Sempre priorizar micro_location quando inferido/orla
     if "micro_location" in missing and "micro_location" not in state.asked_questions:
