@@ -48,17 +48,19 @@ TRIAGE_ONLY = os.getenv("TRIAGE_ONLY", "false").strip().lower() in ("true", "1",
 # Configuração do provedor LLM
 if OPENAI_API_KEY:
     LLM_API_KEY = OPENAI_API_KEY
-    LLM_MODEL = os.getenv("OPENAI_MODEL", "gpt-oss-20b")  # Modelo free (ou gpt-4o-mini se pago)
+    LLM_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")  # Modelo padrão
+    LLM_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
 
-    # Auto-detecta base URL: se a key começa com sk-or-v1, é OpenRouter
+    # Auto-detecta provedor pela base URL ou chave
     if OPENAI_API_KEY.startswith("sk-or-v1"):
-        LLM_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1")
         LLM_PROVIDER = "openrouter"
         print(f"[LLM] Usando OpenRouter com modelo {LLM_MODEL}")
+    elif "generativelanguage.googleapis.com" in LLM_BASE_URL:
+        LLM_PROVIDER = "gemini"
+        print(f"[LLM] Usando Google Gemini com modelo {LLM_MODEL}")
     else:
-        LLM_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
-    LLM_PROVIDER = "openai"
-    print(f"[LLM] Usando OpenAI com modelo {LLM_MODEL}")
+        LLM_PROVIDER = "openai"
+        print(f"[LLM] Usando OpenAI com modelo {LLM_MODEL}")
 elif GROQ_API_KEY:
     LLM_API_KEY = GROQ_API_KEY
     LLM_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
@@ -177,8 +179,14 @@ def normalize_llm_error(exc: Any) -> Dict[str, Any]:
             "raw_message": str(message),
             "request_id": safe_get(headers, ["x-request-id"]) or safe_get(headers, ["X-Request-Id"])
         }
-    if status == 401 or "invalid api key" in msg_low or code_low == "invalid_api_key":
+
+    # Erros específicos da Gemini API
+    if "api key not valid" in msg_low or "api_key_invalid" in code_low:
         typ = LLMErrorType.AUTH_INVALID_KEY
+    elif status == 401 or "invalid api key" in msg_low or code_low == "invalid_api_key":
+        typ = LLMErrorType.AUTH_INVALID_KEY
+    elif status == 400 and ("unsupported" in msg_low or "invalid model" in msg_low or "model not found" in msg_low):
+        typ = LLMErrorType.MODEL_NOT_FOUND
     elif status == 403 and ("permission" in msg_low or "not allowed" in msg_low):
         typ = LLMErrorType.AUTH_PERMISSION_DENIED
     elif status == 403 and ("billing" in msg_low or "payment" in msg_low):
@@ -302,10 +310,17 @@ def call_llm(
 
     if max_tokens is not None:
         call_params["max_tokens"] = max_tokens
-    
+
     # Adiciona formato de resposta apenas se for json_object
+    # IMPORTANTE: Gemini pode não suportar response_format diretamente via OpenAI API
+    # Se estiver usando Gemini, injeta instrução no system prompt ao invés
     if response_format == "json_object":
-        call_params["response_format"] = {"type": "json_object"}
+        if LLM_PROVIDER == "gemini" or "gemini" in LLM_MODEL.lower():
+            # Para Gemini: adiciona instrução no system prompt
+            messages[0]["content"] = messages[0]["content"] + "\n\nIMPORTANTE: Você DEVE responder APENAS com JSON válido, sem texto adicional antes ou depois. Formato: {\"chave\": \"valor\"}"
+        else:
+            # Para OpenAI e compatíveis
+            call_params["response_format"] = {"type": "json_object"}
 
     extra_body = _build_extra_body()
     if extra_body:

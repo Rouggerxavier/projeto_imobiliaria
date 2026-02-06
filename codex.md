@@ -97,8 +97,8 @@ LOG_LEVEL=info
 
 # === LLM CONFIG ===
 OPENAI_API_KEY=CHAVE_AQUI
-OPENAI_MODEL=models/gemini-2.0-flash
-OPENAI_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai
+OPENAI_MODEL=gemini-2.5-flash
+OPENAI_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/
 
 GROQ_API_KEY=
 GROQ_MODEL=
