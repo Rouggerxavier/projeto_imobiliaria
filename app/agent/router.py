@@ -243,7 +243,7 @@ def _get_intent_type(intent: Optional[str]) -> Optional[str]:
     return None
 
 
-def score_agent(agent: Agent, lead_state: SessionState, stats: Dict[str, AgentStats]) -> Tuple[int, List[str]]:
+def score_agent(agent: Agent, lead_state: SessionState, stats: Dict[str, AgentStats], priority: bool = False) -> Tuple[int, List[str]]:
     """
     Calcula pontuação de um agente para um lead específico.
 
@@ -251,6 +251,7 @@ def score_agent(agent: Agent, lead_state: SessionState, stats: Dict[str, AgentSt
         agent: Agente a ser avaliado
         lead_state: Estado do lead
         stats: Estatísticas dos agentes
+        priority: Se True, ignora limite de capacidade (para HOT leads)
 
     Returns:
         (score, reasons) onde score é int e reasons é lista de strings explicativas
@@ -339,9 +340,14 @@ def score_agent(agent: Agent, lead_state: SessionState, stats: Dict[str, AgentSt
         reasons.append("specialty_pet")
 
     # Capacidade diária - penalidade forte para evitar sobrecarga
+    # Exceção: HOT leads (priority=True) ignoram limite de capacidade
     agent_stats = stats.get(agent.id, AgentStats())
-    if agent_stats.assigned_today >= agent.daily_capacity:
+    if not priority and agent_stats.assigned_today >= agent.daily_capacity:
         return -1000, [f"capacity_reached_{agent_stats.assigned_today}/{agent.daily_capacity}"]
+    elif priority and agent_stats.assigned_today >= agent.daily_capacity:
+        # HOT lead: aceita mas com pequena penalização (não bloqueia)
+        score -= 5
+        reasons.append(f"priority_override_capacity_{agent_stats.assigned_today}/{agent.daily_capacity}")
 
     return score, reasons
 
@@ -351,6 +357,7 @@ def choose_agent(
     lead_state: SessionState,
     stats_path: str = "data/agent_stats.json",
     correlation_id: Optional[str] = None,
+    priority: bool = False,
     routing_log_path: Optional[str] = DEFAULT_ROUTING_LOG_PATH,
 ) -> Optional[RoutingResult]:
     """
@@ -361,6 +368,7 @@ def choose_agent(
         lead_state: Estado do lead
         stats_path: Caminho para arquivo de stats
         correlation_id: ID de correlação para logs
+        priority: Se True, ignora limite de capacidade (para HOT leads)
 
     Returns:
         RoutingResult com agente escolhido ou None se nenhum disponível
@@ -383,7 +391,7 @@ def choose_agent(
             _normalize_neighborhood(n) for n in agent.coverage_neighborhoods
         ]:
             match_found = True
-        score, reasons = score_agent(agent, lead_state, stats)
+        score, reasons = score_agent(agent, lead_state, stats, priority=priority)
         if score > -1000:  # Filtra incompatíveis
             scored_agents.append((agent, score, reasons))
 
@@ -583,6 +591,7 @@ def route_lead(
     agents_path: str = "data/agents.json",
     stats_path: str = "data/agent_stats.json",
     correlation_id: Optional[str] = None,
+    priority: bool = False,
     routing_log_path: Optional[str] = DEFAULT_ROUTING_LOG_PATH,
 ) -> Optional[RoutingResult]:
     """
@@ -593,6 +602,7 @@ def route_lead(
         agents_path: Caminho para arquivo de agentes
         stats_path: Caminho para arquivo de stats
         correlation_id: ID de correlação
+        priority: Se True, ignora limite de capacidade (para HOT leads)
 
     Returns:
         RoutingResult ou None se falhar
@@ -603,7 +613,7 @@ def route_lead(
             print(f"[ROUTER] no_agents_loaded fallback=null correlation={correlation_id}")
             return None
 
-        return choose_agent(agents, lead_state, stats_path, correlation_id, routing_log_path=routing_log_path)
+        return choose_agent(agents, lead_state, stats_path, correlation_id, priority=priority, routing_log_path=routing_log_path)
 
     except Exception as e:
         print(f"[ROUTER] error={e} fallback=null correlation={correlation_id}")

@@ -98,7 +98,7 @@ def create_test_agents(tmp_path: Path) -> Path:
 def create_test_stats(tmp_path: Path, initial_stats: dict = None) -> Path:
     """Cria arquivo de stats para teste."""
     stats_data = {
-        "last_reset_date": "2026-02-04",
+        "last_reset_date": "2026-02-06",
         "agents": initial_stats or {
             "agent_senior": {"assigned_today": 0, "last_assigned_at": None},
             "agent_standard": {"assigned_today": 0, "last_assigned_at": None},
@@ -201,14 +201,14 @@ def test_capacity_reached(tmp_path):
 
     # Agent senior já atingiu capacidade
     initial_stats = {
-        "agent_senior": {"assigned_today": 20, "last_assigned_at": "2026-02-04T10:00:00Z"},
+        "agent_senior": {"assigned_today": 20, "last_assigned_at": "2026-02-06T10:00:00Z"},
         "agent_standard": {"assigned_today": 0, "last_assigned_at": None},
         "agent_junior": {"assigned_today": 0, "last_assigned_at": None},
         "agent_inactive": {"assigned_today": 0, "last_assigned_at": None},
     }
     stats_path = create_test_stats(tmp_path, initial_stats)
 
-    # Lead que normalmente iria para senior
+    # Lead WARM que normalmente iria para senior (mas capacidade deve bloquear)
     state = SessionState(session_id="test_capacity")
     state.intent = "comprar"
     state.set_triage_field("neighborhood", "Manaíra", status="confirmed", source="user")
@@ -216,8 +216,9 @@ def test_capacity_reached(tmp_path):
     state.set_triage_field("budget", 1000000, status="confirmed", source="user")
     state.set_triage_field("bedrooms", 3, status="confirmed", source="user")
     state.set_triage_field("parking", 2, status="confirmed", source="user")
-    state.set_triage_field("timeline", "3m", status="confirmed", source="user")
-    state.lead_score = LeadScore(temperature="hot", score=85, reasons=[])
+    state.set_triage_field("timeline", "6m", status="confirmed", source="user")
+    # Lead WARM (não HOT) para testar limite de capacidade
+    state.lead_score = LeadScore(temperature="warm", score=60, reasons=[])
 
     # Roteia
     result = route_lead(state, str(agents_path), str(stats_path), correlation_id="test_capacity")

@@ -1,7 +1,10 @@
 ﻿from __future__ import annotations
 import re
 import unicodedata
-from typing import Dict, Iterable, Optional, Set, Any
+from typing import Dict, Iterable, Optional, Set, Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .state import SessionState
 
 
 def _strip_accents(text: str) -> str:
@@ -29,11 +32,48 @@ CITY_ALIASES = {
 
 
 def _parse_currency(fragment: str, suffix: Optional[str]) -> int:
-    fragment = fragment.replace(".", "").replace(",", ".")
+    """
+    Parse currency value with smart decimal/thousands separator detection.
+
+    Examples:
+        "1.200.000" -> 1200000 (thousands separator)
+        "1.2" -> 1.2 (decimal)
+        "1,2" -> 1.2 (decimal PT-BR)
+        "11" -> 11
+    """
+    # Detectar se ponto é decimal ou separador de milhar
+    dot_count = fragment.count(".")
+    comma_count = fragment.count(",")
+
+    if dot_count > 1:
+        # Múltiplos pontos = separador de milhar (1.200.000)
+        fragment = fragment.replace(".", "").replace(",", ".")
+    elif dot_count == 1 and comma_count == 0:
+        # Um ponto e nenhuma vírgula
+        parts = fragment.split(".")
+        if len(parts[1]) == 3:
+            # Formato 1.200 (milhar) ou 1.200.000
+            # Se tem exatamente 3 dígitos após o ponto, pode ser milhar
+            # Mas se tem sufixo (mil, milhão), é provavelmente decimal (1.2 milhão)
+            if suffix and suffix.lower() in {"mi", "milhao", "milhoes", "mil", "k", "m"}:
+                # É decimal: 1.2 milhão
+                fragment = fragment.replace(",", ".")
+            else:
+                # É separador de milhar: 1.200
+                fragment = fragment.replace(".", "")
+        else:
+            # 1-2 dígitos após o ponto = decimal (1.1, 1.12)
+            fragment = fragment.replace(",", ".")
+    elif comma_count > 0:
+        # Vírgula = decimal PT-BR
+        fragment = fragment.replace(".", "").replace(",", ".")
+    # else: sem pontos nem vírgulas, usar como está
+
     try:
         base = float(fragment)
     except ValueError:
         return 0
+
     mult = 1
     if suffix:
         suf = suffix.lower()
@@ -41,25 +81,167 @@ def _parse_currency(fragment: str, suffix: Optional[str]) -> int:
             mult = 1_000_000
         elif suf in {"mil", "k"}:
             mult = 1_000
+
     return int(base * mult)
 
 
-def extract_budget(text: str) -> Optional[int]:
-    patterns = [
-        r"(?:ate|ate|teto|maximo|max|orcamento|budget|limite|por mes|mensal)[^\d]{0,10}(\d+[\.,]?\d*)\s*(mi|milhao|milhoes|mil|k|mi|m)?",
-        r"r\$\s*(\d+[\.,]?\d*)\s*(mi|milhao|milhoes|mil|k|mi|m)?",
+def _parse_budget_value(text: str) -> Optional[int]:
+    """
+    Parse um valor monetário isolado com melhor suporte para PT-BR.
+    Ex: "1 milhão e 200 mil", "1.2 milhões", "900k", "R$ 800.000"
+    """
+    lowered = _strip_accents(text.lower()).strip()
+
+    # Padrão "X milhão/milhões e Y mil" (ex: "1 milhão e 200 mil" = 1.200.000)
+    complex_pattern = r"(\d+(?:[\.,]\d+)?)\s*(?:mi|milhao|milhoes|m)\s*(?:e)?\s*(\d+)\s*mil"
+    m = re.search(complex_pattern, lowered)
+    if m:
+        milhoes = float(m.group(1).replace(",", "."))
+        mil = float(m.group(2))
+        return int(milhoes * 1_000_000 + mil * 1_000)
+
+    # Padrão simples: número + sufixo
+    simple_patterns = [
+        r"r\$\s*(\d+)\.(\d{3})\.(\d{3})",  # R$ 1.200.000
+        r"(\d+(?:[\.,]\d+)?)\s*(mi|milhao|milhoes|m|mil|k)\b",  # 1.2 milhão, 900k
     ]
+
+    for pattern in simple_patterns:
+        m = re.search(pattern, lowered)
+        if m:
+            if len(m.groups()) == 3:  # R$ X.XXX.XXX
+                return int(m.group(1) + m.group(2) + m.group(3))
+            else:
+                return _parse_currency(m.group(1), m.group(2))
+
+    return None
+
+
+def parse_budget_range(text: str) -> Dict[str, Any]:
+    """
+    Extrai orçamento, detectando ranges (ex: "entre 800 mil e 1.2 milhão").
+
+    Returns:
+        {
+            "budget_min": Optional[int],
+            "budget_max": Optional[int],
+            "is_range": bool,
+            "raw_matches": List[int]
+        }
+    """
     lowered = _strip_accents(text.lower())
-    for pattern in patterns:
+
+    # Padrões de range explícitos - capturar tudo entre os delimitadores
+    # Ordem dos sufixos: mais longos primeiro para evitar match parcial
+    suffix_pattern = r"(?:milhoes|milhao|mil|mi|m|k)"
+
+    range_patterns = [
+        # "entre X [sufixo] (e|a|ate) Y [sufixo com possível 'e Z mil']"
+        rf"(?:entre|de)\s+([\d\.,]+\s*{suffix_pattern}?)\s+(?:e|a|ate|até)\s+([\d\.,]+\s*{suffix_pattern}?(?:\s+e\s+\d+\s+mil)?)",
+        # "X [sufixo] até/ate Y [sufixo]" (pattern separado para pegar "X até Y")
+        rf"([\d\.,]+\s*{suffix_pattern}?)\s+(?:ate|até)\s+([\d\.,]+\s*{suffix_pattern}?(?:\s+e\s+\d+\s+mil)?)",
+        # "X [sufixo] a Y [sufixo]" (sem "entre" ou "de")
+        rf"([\d\.,]+\s*{suffix_pattern})\s+a\s+([\d\.,]+\s*{suffix_pattern}?(?:\s+e\s+\d+\s+mil)?)",
+        # "X [sufixo] - Y [sufixo]" ou "X~Y"
+        rf"([\d\.,]+\s*{suffix_pattern}?)\s*[-~]\s+([\d\.,]+\s*{suffix_pattern}?(?:\s+e\s+\d+\s+mil)?)",
+    ]
+
+    for pattern in range_patterns:
         m = re.search(pattern, lowered, re.IGNORECASE)
         if m:
-            value = _parse_currency(m.group(1), m.group(2))
-            return value if value > 0 else None
-    generic = re.search(r"(\d+[\.,]?\d*)\s*(mil|mi|milhao|milhoes|k)", lowered)
-    if generic:
-        val = _parse_currency(generic.group(1), generic.group(2))
-        return val if val > 0 else None
-    return None
+            val1 = _parse_budget_value(m.group(1))
+            val2 = _parse_budget_value(m.group(2))
+            if val1 and val2 and val1 > 0 and val2 > 0:
+                # Garantir ordem crescente
+                budget_min = min(val1, val2)
+                budget_max = max(val1, val2)
+                return {
+                    "budget_min": budget_min,
+                    "budget_max": budget_max,
+                    "is_range": True,
+                    "raw_matches": [val1, val2]
+                }
+
+    # Coletar todos os valores monetários PRIMEIRO
+    all_values = []
+
+    # Encontrar todos os valores monetários no texto (ordem correta de sufixos)
+    for m in re.finditer(rf"([\d\.,]+)\s*({suffix_pattern})\b", lowered, re.IGNORECASE):
+        value = _parse_currency(m.group(1), m.group(2))
+        if value > 0:
+            all_values.append(value)
+
+    # R$ X.XXX.XXX
+    for m in re.finditer(r"r\$\s*(\d+)\.(\d{3})\.(\d{3})", lowered):
+        value = int(m.group(1) + m.group(2) + m.group(3))
+        all_values.append(value)
+
+    # Se encontrou múltiplos valores, verificar contexto
+    if len(all_values) >= 2:
+        # Pegar os 2 valores mais distintos
+        unique_vals = sorted(set(all_values))
+        if len(unique_vals) >= 2:
+            # Range implícito detectado
+            return {
+                "budget_min": unique_vals[0],
+                "budget_max": unique_vals[-1],
+                "is_range": True,
+                "raw_matches": unique_vals
+            }
+
+    # Se encontrou apenas 1 valor, verificar contexto (max-only vs min-only)
+    if len(all_values) == 1:
+        # Padrão "até X" / "máximo X" (apenas max)
+        max_patterns = [
+            rf"(?:ate|até|teto|maximo|max|limite)\s+(?:de\s+)?([\d\.,]+\s*{suffix_pattern}?(?:\s+e\s+\d+\s+mil)?)",
+            rf"(?:por mes|mensal|no max|no maximo)\s+(?:de\s+)?([\d\.,]+\s*{suffix_pattern}?)",
+        ]
+        for pattern in max_patterns:
+            if re.search(pattern, lowered, re.IGNORECASE):
+                return {
+                    "budget_min": None,
+                    "budget_max": all_values[0],
+                    "is_range": False,
+                    "raw_matches": all_values
+                }
+
+        # Padrão "a partir de X" / "mínimo X" (apenas min)
+        min_patterns = [
+            rf"(?:a partir de|partir de|minimo|min|pelo menos)\s+([\d\.,]+\s*{suffix_pattern}?(?:\s+e\s+\d+\s+mil)?)",
+        ]
+        for pattern in min_patterns:
+            if re.search(pattern, lowered, re.IGNORECASE):
+                return {
+                    "budget_min": all_values[0],
+                    "budget_max": None,
+                    "is_range": False,
+                    "raw_matches": all_values
+                }
+
+        # Sem contexto específico, assumir budget_max (comportamento legado)
+        return {
+            "budget_min": None,
+            "budget_max": all_values[0],
+            "is_range": False,
+            "raw_matches": all_values
+        }
+
+    # Nenhum valor encontrado
+    return {
+        "budget_min": None,
+        "budget_max": None,
+        "is_range": False,
+        "raw_matches": []
+    }
+
+
+def extract_budget(text: str) -> Optional[int]:
+    """
+    Função legada para compatibilidade. Retorna apenas budget_max.
+    Use parse_budget_range() para suporte completo a ranges.
+    """
+    result = parse_budget_range(text)
+    return result.get("budget_max")
 
 
 def extract_number(text: str, pattern: str) -> Optional[int]:
@@ -89,6 +271,15 @@ def detect_city(text: str) -> Optional[str]:
         if re.search(rf"\b{re.escape(alias)}\b", normalized):
             return canonical
     return None
+
+
+def resolve_city(user_text: str, session_state: "SessionState") -> Optional[str]:
+    """
+    Detecta cidade explicitamente mencionada pelo usuário.
+    Não aplica fallback automático.
+    """
+    _ = session_state  # reservado para regras futuras
+    return detect_city(user_text)
 
 
 def detect_neighborhood(text: str, known: Iterable[str]) -> Optional[str]:
@@ -145,9 +336,13 @@ def extract_criteria(message: str, known_neighborhoods: Iterable[str]) -> Dict[s
     if parking is not None:
         result["parking"] = parking
 
-    budget = extract_budget(message)
-    if budget:
-        result["budget"] = budget
+    budget_info = parse_budget_range(message)
+    if budget_info.get("budget_min"):
+        result["budget_min"] = budget_info["budget_min"]
+    if budget_info.get("budget_max"):
+        result["budget"] = budget_info["budget_max"]
+    if budget_info.get("is_range"):
+        result["budget_is_range"] = True
 
     pet = extract_boolean(text, {"pet", "cachorro", "gato", "aceita pet", "pet friendly"}, {"nao aceita pet", "sem pet"})
     if pet is not None:

@@ -136,4 +136,8 @@ def test_hot_lead_generates_event(tmp_path, monkeypatch):
     assert len(events_lines) == 1
     event = json.loads(events_lines[0])
     assert event["type"] == "HOT_LEAD"
-    assert event["name"] == "Maria"
+    # Novo formato: nome está em lead_profile
+    assert event["lead_profile"]["name"] == "Maria"
+    assert event["lead_class"] == "HOT"
+    assert event["sla"] == "immediate"
+    assert event["criteria"]["neighborhood"] == "Manaira"

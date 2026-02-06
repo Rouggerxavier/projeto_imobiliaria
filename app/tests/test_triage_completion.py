@@ -76,11 +76,13 @@ def test_triage_completion_no_llm():
         assert "summary" in result, "Response should contain 'summary' field for completed triage"
         assert "handoff" in result, "Response should contain 'handoff' field for completed triage"
 
-        # Verify the reply contains the summary text
+        # Verify the reply contains the summary or SLA text (HOT/WARM/COLD)
         reply = result["reply"]
         assert ("Entendi o que você precisa" in reply or
                 "corretor" in reply.lower() or
-                "triagem" in reply.lower()), \
+                "triagem" in reply.lower() or
+                "acionei" in reply.lower() or
+                "instantes" in reply.lower()), \
             f"Reply should contain summary text, got: {reply}"
 
         # Verify state was marked as completed
@@ -163,10 +165,12 @@ def test_triage_with_greeting():
         assert reply.startswith("Bom dia!") or reply.startswith("Olá!"), \
             f"Reply should start with greeting, got: {reply}"
 
-        # Verify summary is still included
+        # Verify summary or SLA message is still included after greeting
         assert ("Entendi o que você precisa" in reply or
                 "corretor" in reply.lower() or
-                "triagem" in reply.lower()), \
+                "triagem" in reply.lower() or
+                "acionei" in reply.lower() or
+                "instantes" in reply.lower()), \
             "Reply should still contain summary after greeting"
 
         # Clean up

@@ -71,6 +71,15 @@ class SessionState:
     message_index: int = 0  # incremental turn id within the session
     last_activity_at: float = field(default_factory=lambda: time.time())
 
+    # Quality Gate fields
+    quality_gate_turns: int = 0  # contador de perguntas de quality gate feitas
+    field_refusals: Dict[str, int] = field(default_factory=dict)  # campos que o usuário recusou informar
+
+    # SLA fields
+    hot_lead_emitted: bool = False  # se já emitiu evento HOT_LEAD para esta sessão
+    lead_class: Optional[str] = None  # HOT/WARM/COLD
+    sla: Optional[str] = None  # immediate/normal/nurture
+
     # === Normalização helpers ===
     def _now(self) -> float:
         return time.time()
@@ -150,7 +159,6 @@ class SessionState:
             "suites_min": ("suites", value),
             "parking_min": ("parking", value),
             "timeline_bucket": ("timeline", value),
-            "city_confirm": ("city", value),
         }
         return alias.get(key, (key, value))
 
@@ -238,6 +246,35 @@ class SessionState:
         conflict_values: Dict[str, Dict[str, Any]] = {}
         current_turn = self.message_index or 0
 
+        # Tratamento especial para budget range
+        # Se budget_is_range=True, significa que budget_min e budget_max vieram juntos
+        # e devem ser tratados como um único update, sem conflito
+        is_budget_range = updates.get("budget_is_range", {}).get("value") if isinstance(updates.get("budget_is_range"), dict) else updates.get("budget_is_range")
+
+        if is_budget_range:
+            # Extrair budget_min e budget_max dos updates
+            budget_min_payload = updates.get("budget_min")
+            budget_max_payload = updates.get("budget") or updates.get("budget_max")
+
+            budget_min_val = budget_min_payload.get("value") if isinstance(budget_min_payload, dict) else budget_min_payload
+            budget_max_val = budget_max_payload.get("value") if isinstance(budget_max_payload, dict) else budget_max_payload
+
+            # Validar que min <= max
+            if budget_min_val and budget_max_val and budget_min_val > budget_max_val:
+                # Range inválido, trocar
+                budget_min_val, budget_max_val = budget_max_val, budget_min_val
+
+            # Setar ambos sem marcar conflito
+            if budget_min_val is not None:
+                self.set_criterion("budget_min", budget_min_val, status="confirmed", source="user")
+                self.triage_fields["budget_min"]["turn_id"] = current_turn
+            if budget_max_val is not None:
+                self.set_criterion("budget", budget_max_val, status="confirmed", source="user")
+                self.triage_fields["budget"]["turn_id"] = current_turn
+
+            # Remover budget_min, budget, budget_max do updates para não processar novamente
+            updates = {k: v for k, v in updates.items() if k not in {"budget_min", "budget", "budget_max", "budget_is_range"}}
+
         for key, payload in (updates or {}).items():
             if payload is None:
                 continue
@@ -287,6 +324,12 @@ class SessionState:
             prev_val = prev.get("value")
             prev_status = prev.get("status")
             prev_turn = prev.get("turn_id")
+
+            if status == "override" and alias_key == "city" and norm_value is not None:
+                self.set_criterion(alias_key, norm_value, status="confirmed", source=source)
+                self.triage_fields[alias_key]["turn_id"] = current_turn
+                self.triage_fields[alias_key]["raw_text"] = raw_text or str(raw_value)
+                continue
 
             if (
                 prev_status == "confirmed"

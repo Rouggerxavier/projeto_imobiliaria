@@ -16,7 +16,7 @@ from .rules import (
 from .dialogue import Plan
 from .llm import TRIAGE_ONLY
 from . import llm as llm_module
-from .extractor import enrich_with_regex
+from .extractor import enrich_with_regex, resolve_city
 from .presenter import (
     format_option,
     build_summary_payload,
@@ -86,11 +86,6 @@ def _short_reply_updates(message: str, state: SessionState) -> Dict[str, Dict[st
     is_yes = msg in AFFIRMATIVE
     is_no = msg in NEGATIVE
 
-    if lk == "city_confirm" and (is_yes or is_no):
-        city_val = state.criteria.city or state.triage_fields.get("city", {}).get("value")
-        updates["city"] = {"value": city_val if is_yes else None, "status": "confirmed", "source": "user"}
-        return updates
-
     if lk in BOOL_KEYS and (is_yes or is_no):
         updates[lk] = {"value": True if is_yes else False, "status": "confirmed", "source": "user"}
         return updates
@@ -132,6 +127,8 @@ def _short_reply_updates(message: str, state: SessionState) -> Dict[str, Dict[st
 
 def _avoid_repeat_question(state: SessionState, proposed_key: Optional[str]) -> Optional[str]:
     if not proposed_key:
+        return proposed_key
+    if proposed_key == "city" and not state.criteria.city:
         return proposed_key
     if state.last_question_key and state.last_question_key == proposed_key:
         missing = missing_critical_fields(state)
@@ -176,6 +173,62 @@ def _is_valid_name(name: Optional[str]) -> bool:
     return True
 
 
+def _format_budget(value: int) -> str:
+    """Formata valor monetário em PT-BR (ex: R$ 800.000)."""
+    if value >= 1_000_000:
+        # Formato milhões
+        milhoes = value / 1_000_000
+        if milhoes == int(milhoes):
+            return f"R$ {int(milhoes)} milhão" if milhoes == 1 else f"R$ {int(milhoes)} milhões"
+        else:
+            return f"R$ {milhoes:.1f} milhões"
+    else:
+        # Formato com pontos
+        return f"R$ {value:,.0f}".replace(",", ".")
+
+
+def _format_budget_conflict_message(key: str, prev_val: Any, new_val: Any, state: SessionState) -> str:
+    """
+    Gera mensagem de conflito específica para budget, considerando ranges.
+    """
+    if key in {"budget", "budget_max"}:
+        # Verificar se já existe budget_min definido
+        budget_min = state.criteria.budget_min
+        if budget_min and new_val and new_val < budget_min:
+            # Conflito real: novo máximo é menor que o mínimo existente
+            return (
+                f"Aqui ficou registrado que seu orçamento mínimo é {_format_budget(budget_min)} "
+                f"e máximo {_format_budget(prev_val)}. Agora você disse {_format_budget(new_val)}. "
+                f"Isso fica fora da faixa. Pode confirmar qual é o orçamento correto?"
+            )
+        else:
+            return (
+                f"Aqui ficou registrado orçamento máximo de {_format_budget(prev_val)} "
+                f"nesta conversa. Agora você disse {_format_budget(new_val)}. Qual vale?"
+            )
+    elif key == "budget_min":
+        # Verificar se já existe budget_max definido
+        budget_max = state.criteria.budget
+        if budget_max and new_val and new_val > budget_max:
+            # Conflito real: novo mínimo é maior que o máximo existente
+            return (
+                f"Aqui ficou registrado que seu orçamento máximo é {_format_budget(budget_max)} "
+                f"e mínimo {_format_budget(prev_val)}. Agora você disse {_format_budget(new_val)}. "
+                f"Isso fica fora da faixa. Pode confirmar qual é o orçamento correto?"
+            )
+        else:
+            return (
+                f"Aqui ficou registrado orçamento mínimo de {_format_budget(prev_val)} "
+                f"nesta conversa. Agora você disse {_format_budget(new_val)}. Qual vale?"
+            )
+    else:
+        # Conflito genérico (não-budget)
+        return (
+            f"Aqui ficou registrado {prev_val} nesta conversa. "
+            f"Agora você disse {new_val}. Qual vale?"
+        )
+
+
 def handle_message(session_id: str, message: str, name: str | None = None, correlation_id: str | None = None) -> Dict[str, Any]:
     """
     Processa mensagem do cliente (máx 1 chamada LLM).
@@ -208,10 +261,6 @@ def handle_message(session_id: str, message: str, name: str | None = None, corre
         state.lead_name = name
 
     state.history.append({"role": "user", "text": message})
-
-    # Default city: assume João Pessoa/PB as base (inferred) to evitar perguntas robóticas
-    if not state.criteria.city and "city" not in state.triage_fields:
-        state.set_triage_field("city", "Joao Pessoa", status="inferred", source="default")
 
     # Heurística para respostas curtas (sim/não)
     user_short_updates = _short_reply_updates(message, state)
@@ -256,6 +305,15 @@ def handle_message(session_id: str, message: str, name: str | None = None, corre
     if user_short_updates:
         extracted_updates.update(user_short_updates)
 
+    explicit_city = resolve_city(message, state)
+    if explicit_city:
+        extracted_updates["city"] = {
+            "value": explicit_city,
+            "status": "override",
+            "source": "user",
+            "raw_text": message,
+        }
+
     conflicts, conflict_values = state.apply_updates(extracted_updates)
 
     if extracted:
@@ -296,14 +354,10 @@ def handle_message(session_id: str, message: str, name: str | None = None, corre
             vals = conflict_values.get(key, {})
             prev_val = vals.get("previous") if vals else state.triage_fields.get(key, {}).get("value")
             new_val = vals.get("new") if vals else extracted_updates.get(key, {}).get("value")
-            prev_turn = vals.get("previous_turn_id")
-            new_turn = vals.get("new_turn_id")
-            question = (
-                f"Aqui ficou registrado {prev_val} nesta conversa"
-                f"{' (turno ' + str(prev_turn) + ')' if prev_turn is not None else ''}."
-                f" Agora você disse {new_val}"
-                f"{' (turno ' + str(new_turn) + ')' if new_turn is not None else ''}. Qual vale?"
-            )
+
+            # Usar mensagem formatada específica para budget ou genérica
+            question = _format_budget_conflict_message(key, prev_val, new_val, state)
+
             state.last_question_key = key
             if key not in state.asked_questions:
                 state.asked_questions.append(key)
@@ -325,7 +379,39 @@ def handle_message(session_id: str, message: str, name: str | None = None, corre
             state.history.append({"role": "assistant", "text": reply})
             return {"reply": reply, "state": state.to_public_dict()}
 
-        # Triagem concluída (sem campos missing)
+        # === QUALITY GATE ===
+        # Verifica se quality_score permite handoff
+        from .quality_gate import should_handoff, next_question_from_quality_gaps, detect_field_refusal, mark_field_refusal
+
+        quality = compute_quality_score(state)
+
+        # Detectar recusa antes de aplicar gate
+        if detect_field_refusal(message) and state.last_question_key:
+            mark_field_refusal(state, state.last_question_key)
+
+        if not should_handoff(state, quality):
+            # Quality gate bloqueou handoff - fazer pergunta cirúrgica
+            next_key = next_question_from_quality_gaps(state, quality)
+            if next_key:
+                state.quality_gate_turns += 1
+                question = _question_text_for_key(next_key, state)
+                state.last_question_key = next_key
+                if next_key not in state.asked_questions:
+                    state.asked_questions.append(next_key)
+
+                # Contexto: avisar que está quase pronto mas falta um detalhe
+                if state.quality_gate_turns == 1:
+                    question = f"Quase lá! Só preciso de mais um detalhe: {question}"
+
+                reply = _prepend_greeting_if_needed(message, question)
+                state.history.append({"role": "assistant", "text": reply})
+                print(f"[QUALITY_GATE] Pergunta de gap: {next_key} (turn {state.quality_gate_turns}/{3})")
+                return {"reply": reply, "state": state.to_public_dict()}
+            else:
+                # Sem perguntas disponíveis, permitir handoff mesmo com score baixo
+                print(f"[QUALITY_GATE] Sem perguntas disponíveis, permitindo handoff com grade={quality.get('grade')}")
+
+        # Triagem concluída (sem campos missing ou quality gate passou)
         # Roteamento automático de lead para corretor
         if not _is_valid_name(state.lead_profile.get("name")):
             name_q = "Perfeito, já entendi seu perfil. Pra eu repassar certinho para o corretor, qual seu nome?"
@@ -335,7 +421,29 @@ def handle_message(session_id: str, message: str, name: str | None = None, corre
             state.history.append({"role": "assistant", "text": name_q})
             return {"reply": name_q, "state": state.to_public_dict()}
 
-        routing_result = route_lead(state, correlation_id=correlation_id)
+        # === SLA POLICY ===
+        # Classificar lead e determinar ação SLA antes do roteamento
+        from .sla import (
+            classify_lead,
+            compute_sla_action,
+            get_sla_message,
+            should_emit_hot_event,
+            build_hot_lead_event,
+        )
+
+        lead_score_value = state.lead_score.score
+        lead_class = classify_lead(lead_score_value, state)
+        quality = compute_quality_score(state)
+        sla_action = compute_sla_action(lead_class, quality.get("grade"), state)
+
+        # Atualizar estado com classificação SLA
+        state.lead_class = lead_class
+        state.sla = sla_action["sla_type"]
+
+        print(f"[SLA] lead_class={lead_class} score={lead_score_value} sla={state.sla} priority={sla_action['priority']} correlation={correlation_id}")
+
+        # Roteamento (com priority se HOT)
+        routing_result = route_lead(state, correlation_id=correlation_id, priority=sla_action["priority"])
         assigned_agent_info = None
 
         if routing_result:
@@ -351,16 +459,16 @@ def handle_message(session_id: str, message: str, name: str | None = None, corre
         # Gera summary com informação do corretor atribuído
         summary = build_summary_payload(state, assigned_agent=assigned_agent_info)
         summary["payload"]["lead_score"] = state.lead_score.__dict__
-
-        # Adiciona quality score ao payload
-        quality = compute_quality_score(state)
         summary["payload"]["quality_score"] = quality
+        summary["payload"]["lead_class"] = lead_class
+        summary["payload"]["sla"] = state.sla
 
         if assigned_agent_info:
             summary["payload"]["assigned_agent"] = assigned_agent_info
             summary["payload"]["routing"] = {
                 "strategy": routing_result.strategy,
-                "evaluated_agents_count": routing_result.evaluated_agents_count
+                "evaluated_agents_count": routing_result.evaluated_agents_count,
+                "priority": sla_action["priority"]
             }
 
         state.completed = True
@@ -383,31 +491,45 @@ def handle_message(session_id: str, message: str, name: str | None = None, corre
             "lead_score": state.lead_score.__dict__,
             "quality_score": quality,
             "assigned_agent": assigned_agent_info,
+            "lead_class": lead_class,
+            "sla": state.sla,
+            "priority": sla_action["priority"],
+            "last_action": f"{lead_class.lower()}_handoff",
             "flags": {
                 "is_completed": True,
-                "is_hot": state.lead_score.temperature == "hot",
+                "is_hot": lead_class == "HOT",
                 "needs_followup": quality.get("grade") != "A",
             },
         }
         persistence.append_lead(lead_record)
         if state.lead_profile.get("name"):
             persistence.update_lead_index(state.lead_profile["name"], lead_id)
-        if state.lead_score.temperature == "hot":
-            event = {
-                "type": "HOT_LEAD",
-                "lead_id": lead_id,
-                "at": completed_at,
-                "session_id": state.session_id,
-                "name": state.lead_profile.get("name"),
-                "neighborhood": state.criteria.neighborhood,
-                "budget": state.criteria.budget,
-                "quality_grade": quality.get("grade"),
-                "temperature": state.lead_score.temperature,
-            }
-            print(f"[NOTIFY] HOT_LEAD lead_id={lead_id} name={state.lead_profile.get('name')} neighborhood={state.criteria.neighborhood} budget={state.criteria.budget}")
-            persistence.append_event(event)
 
-        reply = _prepend_greeting_if_needed(message, summary["text"])
+        # Emitir evento HOT_LEAD com proteção contra duplicata
+        if should_emit_hot_event(state, lead_class):
+            event = build_hot_lead_event(
+                lead_id=lead_id,
+                session_state=state,
+                lead_score=lead_score_value,
+                quality_grade=quality.get("grade"),
+                assigned_agent=assigned_agent_info,
+                timestamp=completed_at
+            )
+            print(f"[NOTIFY] HOT_LEAD lead_id={lead_id} name={state.lead_profile.get('name')} score={lead_score_value} correlation={correlation_id}")
+            persistence.append_event(event)
+            state.hot_lead_emitted = True
+
+        # Mensagem final diferenciada por SLA
+        agent_name = assigned_agent_info.get("name") if assigned_agent_info else None
+        agent_whatsapp = assigned_agent_info.get("whatsapp") if assigned_agent_info else None
+        sla_message = get_sla_message(
+            message_template=sla_action["message_template"],
+            agent_name=agent_name,
+            expose_contact=tools.EXPOSE_AGENT_CONTACT,
+            agent_whatsapp=agent_whatsapp
+        )
+
+        reply = _prepend_greeting_if_needed(message, sla_message)
         state.history.append({"role": "assistant", "text": reply})
         return {
             "reply": reply,

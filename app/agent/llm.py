@@ -255,6 +255,129 @@ def _client() -> OpenAI:
     return OpenAI(api_key=LLM_API_KEY, base_url=LLM_BASE_URL)
 
 
+def _call_gemini_native(
+    system_prompt: str,
+    user_message: str,
+    temperature: float = 0.3,
+    max_tokens: Optional[int] = None,
+) -> str:
+    """
+    Chama Gemini usando a API nativa (google.genai).
+    Retorna string de resposta.
+    """
+    print(f"[DEBUG] Chamando Gemini nativo - Modelo: {LLM_MODEL}, Temp: {temperature}, MaxTokens: {max_tokens}")
+
+    from google import genai
+    from google.genai import types
+
+    # Cria o cliente
+    client = genai.Client(api_key=LLM_API_KEY)
+
+    # Combina system prompt + user message
+    full_prompt = f"{system_prompt}\n\n{user_message}"
+
+    # Adiciona prefixo "models/" se não existir
+    model_name = LLM_MODEL if LLM_MODEL.startswith("models/") else f"models/{LLM_MODEL}"
+
+    # Gera resposta
+    response = client.models.generate_content(
+        model=model_name,
+        contents=full_prompt,
+        config=types.GenerateContentConfig(
+            temperature=temperature,
+            max_output_tokens=max_tokens or 2048,
+        )
+    )
+
+    return response.text
+
+
+def _call_llm_gemini_native(
+    system_prompt: str,
+    user_message: str | Dict[str, Any],
+    temperature: float = 0.3,
+    response_format: str = "json_object",
+    max_tokens: Optional[int] = None,
+    max_retries: int = 2,
+) -> Dict[str, Any]:
+    """
+    Wrapper para call_llm usando API nativa do Gemini.
+    """
+    # Prepara mensagem do usuário
+    if isinstance(user_message, dict):
+        user_content = json.dumps(user_message, ensure_ascii=False, indent=2)
+    else:
+        user_content = str(user_message)
+
+    # Se esperamos JSON, adiciona instrução no prompt
+    if response_format == "json_object":
+        system_prompt = system_prompt + "\n\nIMPORTANTE: Você DEVE responder APENAS com JSON válido, sem texto adicional antes ou depois. Formato: {\"chave\": \"valor\"}"
+
+    # Tenta com retry
+    last_exception = None
+    for attempt in range(max_retries):
+        try:
+            content = _call_gemini_native(
+                system_prompt=system_prompt,
+                user_message=user_content,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+
+            # Se esperamos JSON, faz parse
+            if response_format == "json_object":
+                try:
+                    # Remove markdown code blocks se existirem (```json ... ```)
+                    cleaned_content = content.strip()
+                    if cleaned_content.startswith("```"):
+                        # Remove primeira linha (```json ou ```)
+                        lines = cleaned_content.split("\n")
+                        lines = lines[1:] if len(lines) > 1 else lines
+                        # Remove última linha se for ```)
+                        if lines and lines[-1].strip() == "```":
+                            lines = lines[:-1]
+                        cleaned_content = "\n".join(lines).strip()
+
+                    # Verifica se JSON parece truncado (não termina com } ou ])
+                    if not cleaned_content.endswith("}") and not cleaned_content.endswith("]"):
+                        if attempt < max_retries - 1:
+                            print(f"[WARN] JSON parece truncado (não termina com }} ou ]), tentando novamente ({attempt + 1}/{max_retries})")
+                            continue
+                        raise RuntimeError(f"Gemini retornou JSON truncado após {max_retries} tentativas: {content}")
+
+                    return json.loads(cleaned_content)
+                except json.JSONDecodeError as exc:
+                    # Se falhou no parse JSON, tenta novamente
+                    if attempt < max_retries - 1:
+                        print(f"[WARN] JSON inválido, tentando novamente ({attempt + 1}/{max_retries})")
+                        continue
+                    raise RuntimeError(f"Gemini retornou JSON inválido após {max_retries} tentativas: {content}") from exc
+
+            # Caso contrário retorna texto em dict
+            return {"response": content}
+
+        except Exception as exc:
+            last_exception = exc
+            # Log detalhado do erro
+            import traceback
+            error_details = traceback.format_exc()
+            print(f"[ERROR] Erro na chamada Gemini (tentativa {attempt + 1}/{max_retries}):")
+            print(f"  Tipo: {type(exc).__name__}")
+            print(f"  Mensagem: {exc}")
+            print(f"  Traceback:\n{error_details}")
+
+            if attempt < max_retries - 1:
+                print(f"[WARN] Tentando novamente...")
+                continue
+            # Normaliza e lança erro estruturado
+            normalized = {"type": LLMErrorType.UNKNOWN.value, "raw_message": str(exc), "exception_type": type(exc).__name__}
+            raise LLMServiceError(normalized) from exc
+
+    # Se chegou aqui, todas as tentativas falharam
+    normalized = {"type": LLMErrorType.UNKNOWN.value, "raw_message": str(last_exception)}
+    raise LLMServiceError(normalized) from last_exception
+
+
 def call_llm(
     system_prompt: str,
     user_message: str | Dict[str, Any],
@@ -283,8 +406,19 @@ def call_llm(
     Raises:
         RuntimeError: Se API key não estiver configurada ou houver erro após todas as tentativas
     """
+    # Se for Gemini, usa API nativa ao invés do endpoint OpenAI bugado
+    if LLM_PROVIDER == "gemini":
+        return _call_llm_gemini_native(
+            system_prompt=system_prompt,
+            user_message=user_message,
+            temperature=temperature,
+            response_format=response_format,
+            max_tokens=max_tokens,
+            max_retries=max_retries,
+        )
+
     client = _client()
-    
+
     # Prepara mensagem do usuário
     if isinstance(user_message, dict):
         user_content = json.dumps(user_message, ensure_ascii=False, indent=2)
@@ -461,7 +595,7 @@ def test_llm_connection() -> bool:
             system_prompt="Você é um assistente útil. Responda sempre em JSON.",
             user_message="Responda com JSON contendo apenas uma chave 'status' com valor 'OK'",
             temperature=0.0,
-            max_tokens=32
+            max_tokens=128  # Aumentado para acomodar formatação markdown do Gemini
         )
         print(f"[OK] Conexão com {LLM_PROVIDER} OK: {result}")
         return True
@@ -606,8 +740,8 @@ def llm_decide(
             system_prompt=system_prompt,
             user_message=payload,
             temperature=0.3,
-            max_tokens=512,
-            max_retries=1  # Apenas 1 tentativa para não spammar
+            max_tokens=2048,  # Aumentado para evitar truncamento de JSON
+            max_retries=3  # Mais tentativas para lidar com erros transitórios
         )
 
         # Valida e normaliza resposta
