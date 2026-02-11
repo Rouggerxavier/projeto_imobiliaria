@@ -5,14 +5,24 @@ import json
 from datetime import datetime, timedelta
 from fastapi import FastAPI, Request, Depends, HTTPException
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from app.agent.controller import handle_message
 from app.agent.llm import LLM_PREWARM, prewarm_llm
+from app.core.logging import setup_logging
+from app.core.config import settings
+from app.routes.whatsapp import router as whatsapp_router
 
 load_dotenv()
+
+# Setup logging first
+setup_logging()
+
 app = FastAPI(title="Agente Imobiliário WhatsApp", version="0.1.0")
+
+# Include routers
+app.include_router(whatsapp_router)
 
 
 class WebhookRequest(BaseModel):
@@ -21,13 +31,106 @@ class WebhookRequest(BaseModel):
     name: str | None = None
 
 
+@app.get("/")
+async def home():
+    """Home page with API status and useful links."""
+    timestamp = datetime.now().isoformat()
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Agente Imobiliário API</title>
+        <style>
+            body {{
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+                max-width: 800px;
+                margin: 50px auto;
+                padding: 20px;
+                background: #f5f5f5;
+            }}
+            .container {{
+                background: white;
+                padding: 30px;
+                border-radius: 8px;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            }}
+            h1 {{ color: #333; margin-top: 0; }}
+            .status {{ color: #28a745; font-weight: bold; }}
+            .links {{ margin-top: 20px; }}
+            .links a {{
+                display: inline-block;
+                margin-right: 15px;
+                color: #007bff;
+                text-decoration: none;
+                padding: 8px 15px;
+                border: 1px solid #007bff;
+                border-radius: 4px;
+                transition: all 0.2s;
+            }}
+            .links a:hover {{
+                background: #007bff;
+                color: white;
+            }}
+            .info {{ margin-top: 20px; color: #666; font-size: 14px; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>🏠 Agente Imobiliário API</h1>
+            <p class="status">✓ Status: Online</p>
+            <div class="links">
+                <a href="/docs">📚 API Documentation</a>
+                <a href="/health">❤️ Health Check</a>
+            </div>
+            <div class="info">
+                <p><strong>Endpoints disponíveis:</strong></p>
+                <ul>
+                    <li><code>GET /</code> - Esta página</li>
+                    <li><code>GET /health</code> - Health check</li>
+                    <li><code>POST /webhook</code> - Webhook do agente</li>
+                    <li><code>GET /webhook/whatsapp</code> - Verificação WhatsApp</li>
+                    <li><code>POST /webhook/whatsapp</code> - Eventos WhatsApp</li>
+                    <li><code>GET /docs</code> - Documentação interativa</li>
+                </ul>
+                <p style="margin-top: 20px;">
+                    <small>Timestamp: {timestamp}</small>
+                </p>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html_content)
+
+
 @app.get("/health")
 async def health():
-    return {"status": "ok"}
+    """Health check endpoint - returns 200 OK with status."""
+    return {"status": "ok", "timestamp": datetime.now().isoformat()}
 
 
 @app.on_event("startup")
 async def _startup():
+    """Application startup - validate settings and log configuration."""
+    import logging
+    logger = logging.getLogger(__name__)
+
+    # Validate WhatsApp configuration
+    validation = settings.validate_whatsapp_config()
+    if validation["errors"]:
+        for error in validation["errors"]:
+            logger.error("Configuration error: %s", error)
+    if validation["warnings"]:
+        for warning in validation["warnings"]:
+            logger.warning("Configuration warning: %s", warning)
+
+    logger.info(
+        "Application started - env=%s, log_level=%s, whatsapp_send=%s",
+        settings.APP_ENV,
+        settings.LOG_LEVEL,
+        "disabled" if settings.DISABLE_WHATSAPP_SEND else "enabled",
+    )
+
     # Prewarm desativado para evitar chamadas iniciais ao LLM.
     return
 

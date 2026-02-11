@@ -283,7 +283,7 @@ class SessionState:
             source = payload.get("source", "llm") if isinstance(payload, dict) else "llm"
             raw_text = payload.get("raw_text", None) if isinstance(payload, dict) else None
             # Se veio texto explícito do usuário para city/neighborhood, considerar confirmado
-            if raw_text and key in {"city", "neighborhood"} and status != "confirmed":
+            if raw_text and key in {"city", "neighborhood"} and status not in {"confirmed", "override"}:
                 status = "confirmed"
 
             if key in {"lead_name", "name"}:

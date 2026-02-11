@@ -289,6 +289,9 @@ def _intent_stage_ready(state: SessionState) -> bool:
 def next_best_question_key(state: SessionState) -> Optional[str]:
     missing = missing_critical_fields(state)
 
+    if "intent" in missing and "intent" not in state.asked_questions:
+        return "intent"
+
     if "city" in missing:
         return "city"
 

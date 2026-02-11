@@ -353,9 +353,229 @@ Cada lead salvo em `data/leads.jsonl` inclui:
   python test_llm_config.py                             # valida .env + conexão LLM
   ```
 
-## Próximos Passos Sugeridos
-- Persistir sessões (Redis) para múltiplas instâncias.
-- Métricas de tokens/latência e dashboard simples.
-- Plug WhatsApp Cloud API (adaptar payload e headers).
-- Streaming opcional para respostas longas.
+## Deploy em Produção (Render)
 
+### Configuração de Variáveis de Ambiente no Render
+
+Acesse o Dashboard do Render → seu serviço → **Environment** e adicione:
+
+#### Obrigatórias para WhatsApp
+```bash
+WHATSAPP_VERIFY_TOKEN=seu_token_secreto_aqui
+# Gere um token aleatório seguro, ex: openssl rand -hex 32
+```
+
+#### Recomendadas para Produção
+```bash
+APP_ENV=production
+LOG_LEVEL=INFO
+WHATSAPP_APP_SECRET=seu_app_secret_do_meta
+# Obtenha em: https://developers.facebook.com/apps/
+```
+
+#### Modo Teste (sem credenciais WhatsApp)
+```bash
+DISABLE_WHATSAPP_SEND=true
+# Permite testar o webhook POST sem enviar mensagens reais
+```
+
+#### Opcionais (quando for enviar mensagens)
+```bash
+WHATSAPP_ACCESS_TOKEN=seu_access_token
+WHATSAPP_PHONE_NUMBER_ID=seu_phone_number_id
+```
+
+### Comando de Start no Render
+O comando configurado no Render deve ser:
+```bash
+python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT
+```
+(Este já deve estar configurado se o serviço está "Live")
+
+### Endpoints de Produção
+
+Uma vez deployed, você terá:
+
+- **Home**: `https://seu-app.onrender.com/` → Página de status
+- **Health Check**: `https://seu-app.onrender.com/health` → `{"status":"ok"}`
+- **Docs**: `https://seu-app.onrender.com/docs` → Swagger UI
+- **WhatsApp Webhook**: `https://seu-app.onrender.com/webhook/whatsapp`
+
+## Configuração do WhatsApp Cloud API
+
+### 1. Configurar Webhook no Meta Developers
+
+1. Acesse: https://developers.facebook.com/apps/
+2. Selecione seu App → WhatsApp → Configuration
+3. Configure o Webhook:
+   - **Callback URL**: `https://seu-app.onrender.com/webhook/whatsapp`
+   - **Verify Token**: O mesmo valor que você definiu em `WHATSAPP_VERIFY_TOKEN`
+4. Clique em "Verify and Save"
+5. Subscribe nos eventos desejados: `messages`, `message_status`, etc.
+
+### 2. Obter Credenciais
+
+- **APP_SECRET**: App Dashboard → Settings → Basic → App Secret
+- **ACCESS_TOKEN**: WhatsApp → Getting Started → Temporary access token (ou gere permanente)
+- **PHONE_NUMBER_ID**: WhatsApp → Getting Started → Phone Number ID
+
+## Testando a API
+
+### 1. Health Check
+```bash
+curl https://seu-app.onrender.com/health
+# Resposta esperada: {"status":"ok","timestamp":"..."}
+```
+
+### 2. Webhook WhatsApp - Verificação (GET)
+Simule a verificação do Meta:
+```bash
+curl "https://seu-app.onrender.com/webhook/whatsapp?hub.mode=subscribe&hub.verify_token=SEU_TOKEN&hub.challenge=test123"
+# Resposta esperada: test123 (texto plano)
+```
+
+Se retornar 403, verifique se `WHATSAPP_VERIFY_TOKEN` está configurado corretamente no Render.
+
+### 3. Webhook WhatsApp - Evento (POST)
+Simule um evento do WhatsApp:
+```bash
+curl -X POST https://seu-app.onrender.com/webhook/whatsapp \
+  -H "Content-Type: application/json" \
+  -d '{
+    "object": "whatsapp_business_account",
+    "entry": [{
+      "id": "123456789",
+      "changes": [{
+        "value": {
+          "messages": [{
+            "from": "5511999999999",
+            "text": {"body": "Olá"}
+          }]
+        }
+      }]
+    }]
+  }'
+# Resposta esperada: {"ok":true}
+```
+
+**Nota**: Se `WHATSAPP_APP_SECRET` estiver configurado, você precisará incluir o header `X-Hub-Signature-256`. Para testes sem assinatura, deixe `WHATSAPP_APP_SECRET` vazio.
+
+### 4. Webhook do Agente (existente)
+```bash
+curl -X POST https://seu-app.onrender.com/webhook \
+  -H "Content-Type: application/json" \
+  -d '{
+    "session_id": "test-123",
+    "message": "Quero alugar apartamento em Manaíra",
+    "name": "Maria"
+  }'
+# Resposta: {"reply":"..."}
+```
+
+## Logs e Monitoramento
+
+### Visualizar Logs no Render
+Dashboard → seu serviço → **Logs**
+
+Os logs incluem:
+- ✅ Eventos recebidos do WhatsApp (sem PII)
+- ✅ Validação de assinatura
+- ✅ Erros de configuração
+- ❌ Tokens/secrets são automaticamente sanitizados
+
+### Exemplo de Log Seguro
+```
+2025-02-11 10:30:45 - app.routes.whatsapp - INFO - WhatsApp webhook received - type=whatsapp_business_account, entries=1, event_ids=['123456789'], messages=1
+```
+
+Tokens são redactados automaticamente:
+```
+2025-02-11 10:30:45 - app.core.config - WARNING - WHATSAPP_APP_SECRET not set - signature validation disabled
+```
+
+## Modo Desenvolvimento Local
+
+### 1. Configurar .env
+```bash
+cp .env.example .env
+# Edite .env e adicione:
+WHATSAPP_VERIFY_TOKEN=test_token_local
+DISABLE_WHATSAPP_SEND=true
+LOG_LEVEL=DEBUG
+```
+
+### 2. Rodar Local
+```bash
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+### 3. Testar Local
+- Home: http://localhost:8000/
+- Health: http://localhost:8000/health
+- Docs: http://localhost:8000/docs
+- Webhook WhatsApp: http://localhost:8000/webhook/whatsapp
+
+## Segurança e Boas Práticas
+
+### ✅ Implementado
+- Validação de assinatura X-Hub-Signature-256 (quando `WHATSAPP_APP_SECRET` configurado)
+- Sanitização automática de tokens/secrets nos logs
+- Modo teste com `DISABLE_WHATSAPP_SEND=true`
+- Validação de configuração no startup
+- Resposta rápida (200 OK) para evitar timeouts do WhatsApp
+- Rate limiting e retry logic já implementados no agente LLM
+
+### 🔒 Recomendações
+- **Sempre configure** `WHATSAPP_APP_SECRET` em produção
+- Use tokens fortes (32+ caracteres aleatórios)
+- Monitore logs para tentativas de acesso não autorizado
+- Configure HTTPS no Render (já habilitado por padrão)
+
+## Estrutura de Arquivos (Nova)
+
+```
+app/
+├── core/
+│   ├── __init__.py
+│   ├── config.py          # Settings via ENV
+│   └── logging.py         # Logs estruturados + sanitização
+├── routes/
+│   ├── __init__.py
+│   └── whatsapp.py        # Webhook WhatsApp (GET/POST)
+├── agent/                 # Lógica do agente (existente)
+├── main.py                # FastAPI app + routers
+└── ...
+```
+
+## Próximos Passos
+- ✅ Base de produção configurada
+- ✅ Webhook WhatsApp pronto (GET/POST)
+- ✅ Logs estruturados e seguros
+- 🔄 Integrar processamento de mensagens WhatsApp com `handle_message()`
+- 🔄 Implementar envio de mensagens via WhatsApp API
+- 🔄 Persistir sessões (Redis) para múltiplas instâncias
+- 🔄 Métricas de tokens/latência e dashboard simples
+- 🔄 Streaming opcional para respostas longas
+
+## FAQ Engine
+O agente tem um FAQ curto para dúvidas comuns de processo (financiamento, FGTS, documentos, taxas, prazos, negociação, visita) e sobre o próprio fluxo. A detecção é keyword-based + formato de pergunta ("?" ou começa com como/quanto/pode/aceita/precisa/quando), sem travar a triagem.
+
+Intents e keywords (app/faq.py):
+- FINANCIAMENTO: financiamento, financiar, banco, entrada, parcelar, financia
+- FGTS: fgts, fundo de garantia
+- DOCUMENTOS: escritura, registro, documentos, cartorio, regularizado, habite-se
+- TAXAS: itbi, cartorio, taxa, custos, condominio, impostos
+- PRAZO: quanto tempo, prazo, demora, leva quanto, quando entrega, chaves
+- NEGOCIACAO: negociar, desconto, abaixa, negociacao, aceita proposta
+- VISITA: visitar, agendar, visita, conhecer, ver o imovel
+- STATUS: e agora, proximo passo, quando, vai chamar, corretor, atendimento, ja tem opcoes, me manda opcoes
+
+Fluxo de resposta:
+1) detect_faq_intent(user_text) → FAQIntent ou None
+2) answer_faq(intent, session_state) → resposta curta e humana (orientação geral, corretor confirma)
+3) Se ainda faltam campos do funil, a próxima pergunta é anexada na mesma resposta: "Só pra eu te ajudar melhor: ..."
+
+Como adicionar/editar:
+- Editar intents/keywords/respostas em `app/faq.py` (KEYWORDS e answer_faq).
+- Detecção simples: adicione keywords e, se quiser, ajuste QUESTION_CUES.
+- Respostas devem ser genéricas, sem prometer condições ou citar números específicos; mantenha tom curto e inclua “o corretor confirma no seu caso” quando aplicável.

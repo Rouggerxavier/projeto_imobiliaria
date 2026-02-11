@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import unicodedata
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional, Iterator
 from pathlib import Path
@@ -208,6 +209,7 @@ def next_followup_message(lead: Dict[str, Any], followup_history: Dict[str, List
 
     triage_fields = lead.get("triage_fields", {})
     intent = lead.get("intent")
+    city = triage_fields.get("city", {}).get("value")
 
     reasons = []
 
@@ -279,10 +281,19 @@ def next_followup_message(lead: Dict[str, Any], followup_history: Dict[str, List
 
     # === SUGESTÃO DE BAIRROS (se neighborhood ausente e já tentou antes) ===
     if not neighborhood and "neighborhood_suggest" not in sent_followups and "neighborhood" in sent_followups:
+        normalized_city = unicodedata.normalize("NFKD", str(city or "")).encode("ascii", "ignore").decode("ascii").lower().strip()
+        if normalized_city in {"joao pessoa", "jp"}:
+            return {
+                "message_text": (
+                    "Pensando em João Pessoa: Manaíra, Tambaú ou Cabo Branco te interessam? "
+                    "Ou prefere outro bairro?"
+                ),
+                "followup_key": "neighborhood_suggest",
+                "reasons": ["neighborhood_retry_with_suggestions"]
+            }
         return {
             "message_text": (
-                "Pensando em João Pessoa: Manaíra, Tambaú ou Cabo Branco te interessam? "
-                "Ou prefere outro bairro?"
+                "Tem algum bairro em mente para eu considerar primeiro?"
             ),
             "followup_key": "neighborhood_suggest",
             "reasons": ["neighborhood_retry_with_suggestions"]

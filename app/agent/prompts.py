@@ -281,7 +281,7 @@ Objetivo: coletar dados do lead sem repetir perguntas já respondidas (state.ask
 
 Campos críticos para fechar triagem:
 - intent/operation (comprar|alugar)
-- city (João Pessoa pode vir inferido, mas precisa confirmar)
+- city (sempre perguntar ao usuário quando não estiver explícita)
 - neighborhood (1–3 opções) + micro_location (beira-mar | 1_quadra | 2-3_quadras | >3_quadras)
 - property_type
 - bedrooms mínimo + suites mínimo

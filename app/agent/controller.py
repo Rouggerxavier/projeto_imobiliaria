@@ -27,6 +27,7 @@ from .persistence import persist_state
 from . import persistence
 from .router import route_lead
 from .quality import compute_quality_score
+from app import faq
 
 
 AFFIRMATIVE = {"sim", "s", "pode", "claro", "ok", "yes", "isso", "perfeito"}
@@ -319,8 +320,10 @@ def handle_message(session_id: str, message: str, name: str | None = None, corre
     if extracted:
         print(f"[CRITERIA] Critérios: {extracted}")
 
+    faq_intent = faq.detect_faq_intent(message)
+
     # Saída amigável no primeiro turno apenas quando a mensagem é só cumprimento/genérica
-    if state.message_index == 1:
+    if state.message_index == 1 and not faq_intent:
         low = message.lower()
         keywords = {"comprar", "alugar", "ap", "apartamento", "casa", "bairro", "cidade", "visitar", "orc", "budget", "r$", "vaga", "quarto", "mil"}
         has_digits = any(ch.isdigit() for ch in low)
@@ -364,10 +367,32 @@ def handle_message(session_id: str, message: str, name: str | None = None, corre
             state.history.append({"role": "assistant", "text": question})
             return {"reply": question, "state": state.to_public_dict()}
 
+        # FAQ antes de seguir o funil
+        faq_intent = faq.detect_faq_intent(message)
+        if faq_intent:
+            faq_reply = faq.answer_faq(faq_intent, state)
+            missing = missing_critical_fields(state)
+            if missing:
+                next_key = next_best_question_key(state)
+                next_key = _avoid_repeat_question(state, next_key)
+                if next_key == "neighborhood" and not state.criteria.city:
+                    next_key = "city"
+                follow_up = _question_text_for_key(next_key, state)
+                combined = f"{faq_reply}\n\nSó pra eu te ajudar melhor: {follow_up}"
+                state.last_question_key = next_key
+                if next_key and next_key not in state.asked_questions:
+                    state.asked_questions.append(next_key)
+                state.history.append({"role": "assistant", "text": combined})
+                return {"reply": combined, "state": state.to_public_dict()}
+            state.history.append({"role": "assistant", "text": faq_reply})
+            return {"reply": faq_reply, "state": state.to_public_dict()}
+
         missing = missing_critical_fields(state)
         if missing:
             next_key = next_best_question_key(state)
             next_key = _avoid_repeat_question(state, next_key)
+            if next_key == "neighborhood" and not state.criteria.city:
+                next_key = "city"
             question = _question_text_for_key(next_key, state)
             state.last_question_key = next_key
             if next_key and next_key not in state.asked_questions:
@@ -538,6 +563,25 @@ def handle_message(session_id: str, message: str, name: str | None = None, corre
             "handoff": tools.handoff_human(str(summary["payload"]))
         }
 
+    # FAQ para fluxo normal
+    if faq_intent:
+        faq_reply = faq.answer_faq(faq_intent, state)
+        missing = missing_critical_fields(state)
+        if missing:
+            next_key = next_best_question_key(state)
+            next_key = _avoid_repeat_question(state, next_key)
+            if next_key == "neighborhood" and not state.criteria.city:
+                next_key = "city"
+            follow_up = _question_text_for_key(next_key, state)
+            combined = f"{faq_reply}\n\nSó pra eu te ajudar melhor: {follow_up}"
+            state.last_question_key = next_key
+            if next_key and next_key not in state.asked_questions:
+                state.asked_questions.append(next_key)
+            state.history.append({"role": "assistant", "text": combined})
+            return {"reply": combined, "state": state.to_public_dict()}
+        state.history.append({"role": "assistant", "text": faq_reply})
+        return {"reply": faq_reply, "state": state.to_public_dict()}
+
     # === FLUXO NORMAL (não usado neste MVP, mas mantido) ===
     plan = Plan(
         action=plan_info.get("action", "ASK"),
@@ -574,6 +618,8 @@ def handle_message(session_id: str, message: str, name: str | None = None, corre
 
     if plan.action in {"ASK", "REFINE", "CLARIFY"}:
         qkey = _avoid_repeat_question(state, plan.question_key or state.last_question_key)
+        if qkey == "neighborhood" and not state.criteria.city:
+            qkey = "city"
         if qkey and choose_question(qkey, state):
             reply = choose_question(qkey, state)
         else:

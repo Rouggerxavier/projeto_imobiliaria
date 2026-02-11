@@ -884,8 +884,7 @@ def _get_question_for_field(field: str) -> str:
     questions = {
         "intent": "Você quer alugar ou comprar?",
         "location": "Qual cidade ou bairro você prefere?",
-        "city": "Qual cidade você prefere? (posso usar João Pessoa como base)",
-        "city_confirm": "Confirma João Pessoa ou prefere outra cidade?",
+        "city": "Em qual cidade você quer procurar o imóvel?",
         "neighborhood": "Quais bairros você quer considerar?",
         "micro_location": "Prefere beira-mar, 1 quadra ou 2-3 quadras da praia?",
         "budget": "Qual o orçamento máximo? Pode ser aproximado.",

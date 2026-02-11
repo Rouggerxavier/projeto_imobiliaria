@@ -214,7 +214,7 @@ def next_question_from_quality_gaps(state: SessionState, quality: Dict[str, Any]
             continue
         # Confirmar campos inferred que ainda não foram confirmados
         if field == "city":
-            return "city_confirm"
+            return "city"
         if state.asked_questions.count(field) < 2:
             return field
 
