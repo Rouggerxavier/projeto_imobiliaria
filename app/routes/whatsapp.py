@@ -8,6 +8,7 @@ import logging
 from fastapi import APIRouter, Request, Query, HTTPException
 from fastapi.responses import PlainTextResponse, JSONResponse
 from app.core.config import settings
+from app.services.whatsapp_sender import send_whatsapp_message, extract_message_from_webhook, WhatsAppSendError
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -92,12 +93,17 @@ async def whatsapp_webhook(request: Request):
     WhatsApp webhook event receiver (POST).
 
     Receives events from WhatsApp Cloud API (messages, status updates, etc).
-    Validates signature, logs event, and responds quickly with 200 OK.
+    Validates signature, processes messages, and sends responses.
 
     Security:
         - Validates X-Hub-Signature-256 if WHATSAPP_APP_SECRET is configured
         - Logs event metadata without exposing PII
-        - Returns 200 immediately (async processing recommended for production)
+        - Returns 200 quickly to avoid timeouts
+
+    Processing:
+        - Extracts incoming message (from, text)
+        - Sends simple response: "Olá! Recebi sua mensagem."
+        - TODO: Integrate with agent controller for intelligent responses
     """
     # Read raw body for signature validation
     body_bytes = await request.body()
@@ -147,14 +153,40 @@ async def whatsapp_webhook(request: Request):
     if settings.LOG_LEVEL.upper() == "DEBUG":
         logger.debug("Webhook payload: %s", payload)
 
-    # TODO: Add async processing here
-    # - Parse message content
-    # - Call agent controller
-    # - Queue response for sending
-    # For now, just acknowledge receipt
+    # Extract message from payload
+    message_data = extract_message_from_webhook(payload)
 
-    if settings.DISABLE_WHATSAPP_SEND:
-        logger.info("Test mode active - webhook accepted but not processing (DISABLE_WHATSAPP_SEND=true)")
+    if message_data:
+        from_number = message_data["from"]
+        text = message_data["text"]
+        message_id = message_data["message_id"]
+
+        logger.info(
+            "Message received - from=%s***, msg_id=%s, text_preview=%s",
+            from_number[:5] if len(from_number) > 5 else from_number,
+            message_id,
+            text[:50] + "..." if len(text) > 50 else text,
+        )
+
+        # Send simple response
+        try:
+            response_text = "Olá! Recebi sua mensagem."
+            result = await send_whatsapp_message(from_number, response_text)
+
+            logger.info(
+                "Response sent - to=%s***, response=%s",
+                from_number[:5] if len(from_number) > 5 else from_number,
+                response_text,
+            )
+
+        except WhatsAppSendError as e:
+            logger.error("Failed to send WhatsApp response: %s", str(e))
+            # Don't fail the webhook - still return 200 to acknowledge receipt
+        except Exception as e:
+            logger.error("Unexpected error sending response: %s", str(e))
+
+    else:
+        logger.debug("No text message found in webhook payload")
 
     # Respond quickly to avoid timeout
     return JSONResponse(content={"ok": True}, status_code=200)
