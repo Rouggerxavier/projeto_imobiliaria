@@ -10,10 +10,11 @@ import time
 class LeadCriteria:
     city: Optional[str] = None
     neighborhood: Optional[str] = None
-    micro_location: Optional[str] = None  # beira-mar|1_quadra|2-3_quadras|>3_quadras|orla|null
+    micro_location: Optional[str] = None  # beira-mar|1_quadra|2-3_quadras|>3_quadras|orla|indifferent
     property_type: Optional[str] = None
     bedrooms: Optional[int] = None  # mínimo
-    suites: Optional[int] = None    # mínimo
+    suites: Optional[int] = None    # mínimo (ou "indifferent")
+    bathrooms_min: Optional[int] = None  # quantidade mínima de banheiros (ou "indifferent")
     parking: Optional[int] = None   # mínimo
     budget: Optional[int] = None    # orçamento máximo (alias budget_max)
     budget_min: Optional[int] = None
@@ -23,10 +24,12 @@ class LeadCriteria:
     financing: Optional[bool] = None
     timeline: Optional[str] = None   # 30d|3m|6m|12m|flexivel
     condo_max: Optional[int] = None
-    floor_pref: Optional[str] = None
-    sun_pref: Optional[str] = None
+    floor_pref: Optional[str] = None  # baixo|medio|alto|indifferent
+    sun_pref: Optional[str] = None  # nascente|poente|indifferent
     view_pref: Optional[str] = None
     leisure_features: Optional[List[str]] = None
+    leisure_required: Optional[str] = None  # yes|no|indifferent
+    leisure_level: Optional[str] = None  # simple|ok|full|indifferent
 
     @property
     def budget_max(self) -> Optional[int]:
@@ -79,6 +82,18 @@ class SessionState:
     hot_lead_emitted: bool = False  # se já emitiu evento HOT_LEAD para esta sessão
     lead_class: Optional[str] = None  # HOT/WARM/COLD
     sla: Optional[str] = None  # immediate/normal/nurture
+
+    # Clarification & Confusion Detection fields
+    pending_field: Optional[str] = None  # campo atualmente sendo coletado
+    awaiting_clarification: bool = False  # usuário pediu esclarecimento sobre a pergunta
+    field_ask_count: Dict[str, int] = field(default_factory=dict)  # quantas vezes cada campo foi perguntado
+    last_bot_utterance: Optional[str] = None  # última mensagem do bot (para contexto)
+    last_user_confusion_signal: Optional[str] = None  # última mensagem de confusão detectada
+
+    # LLM Degraded Mode fields (circuit breaker)
+    llm_degraded: bool = False  # se está em modo degradado (sem LLM)
+    llm_degraded_until_ts: Optional[float] = None  # timestamp até quando fica degradado
+    llm_last_error: Optional[str] = None  # último erro de LLM para debug
 
     # === Normalização helpers ===
     def _now(self) -> float:
@@ -165,7 +180,7 @@ class SessionState:
     def _normalize_for_field(self, key: str, value: Any) -> Tuple[str, Any]:
         """Aplica alias e normalizações sem mutar estado."""
         key, value = self._apply_alias(key, value)
-        if key in {"budget", "budget_min", "parking", "bedrooms", "suites", "condo_max"}:
+        if key in {"budget", "budget_min", "parking", "bedrooms", "suites", "bathrooms_min", "condo_max"}:
             value = self._normalize_numeric(value)
         if key == "timeline":
             value = self._normalize_timeline(value) or value
@@ -182,7 +197,12 @@ class SessionState:
             return
         key, value = self._apply_alias(key, value)
 
-        if key in {"budget", "budget_min", "parking", "bedrooms", "suites", "condo_max"}:
+        # Converte listas para strings para city e neighborhood
+        if key in {"city", "neighborhood"} and isinstance(value, list):
+            # Se for lista, junta os elementos ou pega o primeiro
+            value = value[0] if len(value) == 1 else ", ".join(str(v) for v in value if v)
+
+        if key in {"budget", "budget_min", "parking", "bedrooms", "suites", "bathrooms_min", "condo_max"}:
             value = self._normalize_numeric(value)
         if key == "timeline":
             value = self._normalize_timeline(value) or value
@@ -292,6 +312,10 @@ class SessionState:
                     if cleaned:
                         self.lead_profile["name"] = cleaned
                 continue
+            if key in {"lead_phone"}:
+                if raw_value:
+                    self.lead_profile["phone"] = str(raw_value).strip()
+                continue
             if key in {"phone", "email"}:
                 if raw_value:
                     self.lead_profile[key] = raw_value
@@ -346,9 +370,10 @@ class SessionState:
                 continue
 
             self.set_criterion(alias_key, norm_value, status=status, source=source)
-            # enriquece metadados
-            self.triage_fields[alias_key]["turn_id"] = current_turn
-            self.triage_fields[alias_key]["raw_text"] = raw_text or str(raw_value)
+            # enriquece metadados (só se o campo foi criado)
+            if alias_key in self.triage_fields:
+                self.triage_fields[alias_key]["turn_id"] = current_turn
+                self.triage_fields[alias_key]["raw_text"] = raw_text or str(raw_value)
 
         return conflicts, conflict_values
 

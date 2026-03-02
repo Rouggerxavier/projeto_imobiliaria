@@ -27,6 +27,10 @@ class Settings:
     # Server
     PORT: int = int(os.getenv("PORT", "8000"))
 
+    # Security: API key for the generic /webhook endpoint
+    # Generate with: python -c "import secrets; print(secrets.token_hex(32))"
+    WEBHOOK_API_KEY: str | None = os.getenv("WEBHOOK_API_KEY")
+
     @classmethod
     def validate_whatsapp_config(cls) -> dict[str, str]:
         """Validate WhatsApp configuration and return warnings/errors."""
@@ -45,6 +49,12 @@ class Settings:
 
         if not cls.WHATSAPP_ACCESS_TOKEN and not cls.DISABLE_WHATSAPP_SEND:
             issues["warnings"].append("WHATSAPP_ACCESS_TOKEN not set - cannot send messages")
+
+        if not cls.WEBHOOK_API_KEY:
+            issues["warnings"].append(
+                "WEBHOOK_API_KEY not set - /webhook endpoint is unprotected. "
+                "Set it with: python -c \"import secrets; print(secrets.token_hex(32))\""
+            )
 
         return issues
 

@@ -1,0 +1,33 @@
+﻿============================================================
+TESTE FLUXO HUMANIZADO GRANKASA
+============================================================
+
+CLIENTE: bom dia
+BOT:
+Vou seguir no modo simples: Bom dia! Em quanto tempo vocÛ imagina fechar isso: 30 dias, 3 meses, 6 meses, 12 meses ou sem pressa?
+------------------------------------------------------------
+
+CLIENTE: quero comprar um apartamento em manaira, joao pessoa, perto da orla, com pelo menos 3 quartos, 2 suites e 2 vagas
+BOT:
+Aqui ficou registrado beira-mar (praia) nesta conversa. Agora vocÛ disse orla (praia). Qual vale?
+------------------------------------------------------------
+
+CLIENTE: minha faixa de preco e de 700 mil a 1 milhao
+BOT:
+Vou seguir no modo simples: Em quanto tempo vocÛ imagina fechar isso: 30 dias, 3 meses, 6 meses, 12 meses ou sem pressa?
+------------------------------------------------------------
+
+CLIENTE: prefiro seguir pesquisando
+BOT:
+Vou seguir no modo simples: Em quanto tempo vocÛ imagina fechar isso: 30 dias, 3 meses, 6 meses, 12 meses ou sem pressa?
+------------------------------------------------------------
+
+CLIENTE: Rougger Xavier
+BOT:
+Vou seguir no modo simples: Em quanto tempo vocÛ imagina fechar isso: 30 dias, 3 meses, 6 meses, 12 meses ou sem pressa?
+------------------------------------------------------------
+
+CLIENTE: 83991234567
+BOT:
+Vou seguir no modo simples: Em quanto tempo vocÛ imagina fechar isso: 30 dias, 3 meses, 6 meses, 12 meses ou sem pressa?
+------------------------------------------------------------

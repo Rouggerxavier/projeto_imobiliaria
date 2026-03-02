@@ -60,21 +60,24 @@ CRITICAL_ORDER = [
     "neighborhood",
     "property_type",
     "bedrooms",
+    "suites",           # NOVO: obrigatório (aceita "indifferent")
+    "bathrooms_min",    # NOVO: obrigatório (aceita "indifferent")
     "parking",
     "budget",
     "timeline",
+    "micro_location",   # NOVO: obrigatório (aceita "indifferent")
+    "leisure_required", # NOVO: obrigatório (aceita "indifferent")
+    "lead_name",
+    "lead_phone",
 ]
 
 PREFERENCE_ORDER = [
-    "micro_location",
-    "lead_name",
     "budget_min",
     "condo_max",
-    "floor_pref",
-    "sun_pref",
-    "view_pref",
-    "leisure_features",
-    "suites",
+    "leisure_level",    # NOVO: nível de lazer (após leisure_required)
+    "floor_pref",       # já existia
+    "sun_pref",         # já existia
+    "view_pref",        # já existia
     "payment_type",
     "entry_amount",
     "furnished",
@@ -107,6 +110,14 @@ def _micro_location_complete(val: Optional[str]) -> bool:
     return val in {"beira-mar", "1_quadra", "2-3_quadras", ">3_quadras"}
 
 
+def _is_indifferent(val: any) -> bool:
+    """Verifica se um valor representa 'indiferente/tanto faz'."""
+    if val is None:
+        return False
+    val_str = str(val).lower().strip()
+    return val_str in {"indifferent", "indiferente", "tanto faz", "qualquer", "nao importa", "não importa"}
+
+
 def missing_critical_fields(state: SessionState) -> List[str]:
     missing: List[str] = []
 
@@ -124,118 +135,184 @@ def missing_critical_fields(state: SessionState) -> List[str]:
         missing.append("property_type")
     if _value(state, "bedrooms") is None:
         missing.append("bedrooms")
+
+    # NOVO: Suítes (aceita "indifferent" como preenchido)
+    suites_val = _value(state, "suites")
+    if suites_val is None and not _is_indifferent(suites_val):
+        missing.append("suites")
+
+    # NOVO: Banheiros (aceita "indifferent" como preenchido)
+    bathrooms_val = _value(state, "bathrooms_min")
+    if bathrooms_val is None and not _is_indifferent(bathrooms_val):
+        missing.append("bathrooms_min")
+
     if _value(state, "parking") is None:
         missing.append("parking")
     if _value(state, "budget") is None:
         missing.append("budget")
     if _value(state, "timeline") is None:
         missing.append("timeline")
+
+    # Micro-location (proximidade da praia) - aceita "indifferent"
     micro_val = _value(state, "micro_location")
     micro_status = _status(state, "micro_location")
-    if micro_status == "inferred" or micro_val == "orla":
+    if micro_val is None and not _is_indifferent(micro_val):
         missing.append("micro_location")
+    elif micro_status == "inferred" or micro_val == "orla":
+        missing.append("micro_location")
+
+    # NOVO: Leisure required (aceita "indifferent" como preenchido)
+    leisure_req = _value(state, "leisure_required")
+    if leisure_req is None and not _is_indifferent(leisure_req):
+        missing.append("leisure_required")
+
     return missing
 
 
 QUESTION_BANK: Dict[str, List[str]] = {
     "intent": [
-        "Prefere comprar ou alugar? Posso ajudar nos dois.",
-        "Só pra alinhar: quer comprar ou alugar?",
-        "Me conta: é compra ou aluguel que você busca?",
+        "Pode me contar o que você está buscando 😊 é pra comprar ou alugar?",
+        "É pra comprar ou alugar? Posso ajudar nos dois!",
+        "Me conta, está em busca de algo pra comprar ou pra alugar?",
+        "Você quer alugar ou comprar um imóvel?",
     ],
     "city": [
         "Em qual cidade você quer procurar o imóvel?",
+        "Qual cidade tem sua preferência?",
+        "Me diz a cidade onde você quer encontrar o imóvel.",
     ],
     "neighborhood": [
-        "Em qual bairro você prefere?",
-        "Qual bairro você quer priorizar?",
+        "Qual bairro você prefere?",
+        "Tem algum bairro específico que já está de olho?",
+        "Me conta qual bairro faz mais sentido pra você.",
     ],
     "micro_location": [
-        "Quer ficar beira-mar, a 1 quadra ou 2-3 quadras da praia?",
-        "Sobre distância da praia: beira-mar, 1 quadra ou 2-3 quadras?",
+        "Em relação à praia, você prefere beira-mar, 1 quadra, 2-3 quadras ou tanto faz?",
+        "Proximidade da praia: beira-mar, 1 quadra, 2-3 quadras ou indiferente?",
+        "Quer algo beira-mar, próximo (1-2 quadras) ou a distância não importa?",
     ],
     "property_type": [
-        "Prefere apartamento, casa ou cobertura?",
-        "O tipo de imóvel é apê, casa ou cobertura?",
+        "Apartamento, casa ou cobertura — qual o tipo de imóvel que você busca?",
+        "Você tem preferência pelo tipo, tipo apartamento, casa, cobertura?",
     ],
     "bedrooms": [
         "Quantos quartos no mínimo você precisa?",
-        "Me diz o mínimo de quartos que funciona pra você.",
+        "Me diz o mínimo de quartos que funciona para você.",
+        "Quantos quartos você quer no imóvel? (pode ser 1, 2, 3, 4...)",
     ],
     "suites": [
-        "Precisa de quantas suítes no mínimo?",
-        "Quer pelo menos quantas suítes?",
+        "E suítes (quartos com banheiro próprio), quantas você precisa no mínimo? Pode ser nenhuma ou tanto faz.",
+        "Quantas suítes seriam ideais? (Suíte = quarto com banheiro. Pode dizer 0 / 1 / 2+ / tanto faz)",
+        "Quer pelo menos quantas suítes? (0 / 1 / 2 / 3+ / indiferente)",
+    ],
+    "bathrooms_min": [
+        "E no total de banheiros, quantos no mínimo você precisa? (1 / 2 / 3+ / tanto faz)",
+        "Quantos banheiros no total o imóvel deve ter no mínimo? (pode ser 1, 2, 3... ou tanto faz)",
+        "Banheiros no total (incluindo suítes): quantos você quer no mínimo? (1 / 2 / 3+ / indiferente)",
+    ],
+    "suites_bathrooms_combined": [
+        "Pra eu filtrar certinho: você faz questão de suíte? (0 / 1 / 2+ / tanto faz)\nE no total, quantos banheiros no mínimo? (1 / 2 / 3+ / tanto faz)",
+        "Me conta: quantas suítes você quer (0 / 1 / 2 / indiferente)? E no total de banheiros? (1 / 2 / 3+ / tanto faz)",
     ],
     "parking": [
-        "Quantas vagas você precisa no mínimo?",
-        "Vagas de garagem: 1, 2 ou 3+?",
+        "E vagas de garagem (para carro), quantas você precisa?",
+        "Quantas vagas de garagem são necessárias? Pode ser 1, 2, 3 ou nenhuma.",
+        "Quantas vagas de estacionamento (garagem) você precisa?",
+        "Precisa de vaga de garagem pro carro? Quantas vagas seriam ideais?",
     ],
     "budget": [
-        "Qual o orçamento máximo? Pode ser aproximado.",
-        "Pra eu filtrar certo, qual teto de preço você imagina?",
+        "Me da uma ideia da faixa de preço que faz sentido pra você, tipo de R$ X até R$ Y?",
+        "Qual a faixa de orçamento que você tem em mente pra esse imóvel?",
+        "Pode me contar a faixa de preço que seria ideal para você?",
+        "Até quanto você pode investir nesse imóvel? (pode ser aproximado)",
     ],
     "timeline": [
-        "Qual prazo você trabalha: 30d, 3m, 6m, 12m ou flexível?",
-        "Pensando no prazo: até 30 dias, 3 meses, 6 meses, 12 meses ou flexível?",
+        "E pensando no prazo, você quer algo pra dentro de 30 dias, 3 meses, 6 meses, 12 meses ou está flexível?",
+        "Tem alguma urgência de prazo ou ainda está em fase de pesquisa?",
+        "Pra quando você precisa do imóvel? (pode ser uma ideia aproximada: 1 mês, 3 meses, 6 meses...)",
+    ],
+    "leisure_required": [
+        "Área de lazer no condomínio é importante pra você? (sim / não / tanto faz)",
+        "Você faz questão de área de lazer completa ou tanto faz?",
+        "Precisa de área de lazer (piscina, academia, etc.) ou não é essencial?",
+    ],
+    "leisure_level": [
+        "Qual nível de lazer seria ideal: simples (básico), ok (médio) ou completa (com tudo)? Ou tanto faz?",
+        "Lazer: prefere simples, razoável, completo ou indiferente?",
     ],
     "budget_min": [
-        "Existe um valor mínimo ou ponto de partida?",
+        "Tem também um valor mínimo na faixa ou pode ser qualquer coisa abaixo do máximo?",
     ],
     "condo_max": [
-        "Tem teto de condomínio mensal? (R$)",
+        "Tem algum teto de condomínio mensal que faz sentido pra você?",
     ],
     "floor_pref": [
-        "Prefere andar alto ou qualquer andar serve?",
+        "Preferência de andar: baixo, médio, alto ou tanto faz?",
+        "Você prefere andar baixo, médio, alto ou é indiferente?",
     ],
     "sun_pref": [
-        "Tem preferência de posição solar (nascente/poente/indiferente)?",
+        "Posição solar: nascente, poente ou indiferente?",
+        "Tem preferência de sol nascente (manhã) ou poente (tarde), ou tanto faz?",
     ],
     "view_pref": [
-        "Vista desejada: mar, parque ou tanto faz?",
+        "Qual vista seria ideal pra você: mar, parque, cidade ou tanto faz?",
     ],
-    "leisure_features": [
-        "Quais itens de lazer são importantes? (piscina, academia, gourmet, playground, coworking...)",
+    "pet": [
+        "O imóvel precisa aceitar pet (cachorro/gato)? (sim / não / tanto faz)",
+        "Você tem pet (cachorro, gato)? Precisa que o imóvel aceite?",
+    ],
+    "furnished": [
+        "Prefere imóvel mobiliado, sem móveis ou tanto faz?",
+        "Mobiliado: sim, não ou indiferente?",
     ],
     "payment_type": [
-        "Como pretende pagar? Financiamento, à vista, FGTS ou misto?",
+        "E a forma de pagamento, está pensando em financiar, usar FGTS ou pagar à vista?",
     ],
     "lead_name": [
-        "Qual seu nome para eu registrar aqui?",
-        "Me diz seu nome, por favor.",
+        "Antes de eu fechar o seu perfil aqui, qual é o seu nome?",
+        "Só pra eu personalizar o atendimento, pode me dizer seu nome?",
+    ],
+    "lead_phone": [
+        "E pra o corretor conseguir te contatar, qual o seu celular ou WhatsApp?",
+        "Me passa também o seu número de WhatsApp pra o corretor entrar em contato.",
     ],
 }
 
-# Microcopy com motivo+pergunta (uma só interrogação)
+# Microcopy com motivo+pergunta humanizado (sem dois-pontos)
 MICROCOPY_VARIANTS: Dict[str, List[str]] = {
     "budget": [
-        "Pra eu não te mandar opções fora do seu perfil: qual teto de orçamento você quer considerar?",
-        "Só pra eu calibrar bem as opções: até quanto você quer chegar no orçamento?",
-        "Pra filtrar direitinho: qual é o valor máximo que faz sentido pra você?",
+        "Me da uma ideia da faixa de preço que faz sentido pra você, tipo de R$ X até R$ Y",
+        "Qual a faixa de orçamento que você tem em mente pra esse imóvel?",
+        "Pode me contar a faixa de preço que seriam os limites ideais pra você?",
     ],
     "neighborhood": [
-        "Pra sugerir algo no seu raio de interesse: qual bairro você quer priorizar?",
-        "Pra focar onde faz sentido pra você: qual bairro prefere começar?",
-        "Pra não sair da sua região-alvo: quais bairros você quer considerar primeiro?",
+        "Tem algum bairro específico que já está de olho ou posso sugerir conforme seu perfil?",
+        "Qual bairro você prefere ou tem mais interesse?",
+        "Me diz o bairro que faz mais sentido pra você e a gente parte daí.",
     ],
     "timeline": [
-        "Pra ajustar urgência e agenda: qual prazo você tem em mente (30d, 3m, 6m, 12m, flexível)?",
-        "Pra organizar o ritmo das próximas etapas: em quanto tempo quer avançar (30d, 3m, 6m, 12m ou flexível)?",
-        "Pra alinhar expectativa de tempo: prefere algo para 30 dias, 3 meses, 6 meses, 12 meses ou flexível?",
+        "E pensando no prazo, têm ideia do tempo que você tem pra fechar: 30 dias, 3, 6 ou 12 meses, ou ainda está flexível?",
+        "Tem alguma urgência de prazo ou ainda está em fase de pesquisa mesmo?",
+        "Em quanto tempo você imagina fechar isso: 30 dias, 3 meses, 6 meses, 12 meses ou sem pressa?",
     ],
     "condo_max": [
-        "Condomínio pesa no custo fixo: qual valor mensal máximo te deixa confortável?",
-        "Pra evitar surpresas no boleto: até quanto de condomínio por mês você aceita?",
-        "Pra caber bem no custo mensal: qual é o teto de condomínio que faz sentido pra você?",
+        "Condomínio pesa no custo fixo — tem algum valor mensal máximo que te deixa confortável?",
+        "Até quanto de condomínio por mês ficaria dentro do seu orçamento?",
+        "Qual seria o teto de condomínio mensal que faz sentido pra você?",
     ],
     "payment_type": [
-        "Pra ajustar às formas de pagamento: você pretende financiar, usar FGTS ou pagar à vista?",
-        "Pra alinhar viabilidade: vai ser financiamento, FGTS ou pagamento à vista?",
-        "Pra eu considerar as condições certas: qual formato de pagamento você prefere (financiamento/FGTS/à vista)?",
+        "Você já pensou na forma de pagamento, financiamento, FGTS ou à vista?",
+        "Como você pretende pagar, financiar, usar FGTS ou pagar à vista?",
+        "Qual formato de pagamento faz mais sentido pra você agora?",
     ],
     "intent_stage": [
-        "Você está mais na fase de pesquisar, ou pretende visitar opções nas próximas semanas?",
-        "Hoje você está só sondando, ou já quer marcar visitas em breve?",
-        "Prefere seguir pesquisando ou já quer agendar visitas nas próximas semanas?",
+        "Você está mais na fase de pesquisar as opções (sem pressa) ou já está pronto(a) para agendar visitas?",
+        "Você está só pesquisando por enquanto ou já quer marcar visitas em breve?",
+        "Prefere seguir pesquisando sem compromisso ou já quer agendar visitas nas próximas semanas?",
+    ],
+    "lead_phone": [
+        "E pra o corretor conseguir te contatar, qual o seu celular ou WhatsApp?",
+        "Me passa também o seu número de WhatsApp pra o corretor entrar em contato com você.",
     ],
 }
 
@@ -317,6 +394,10 @@ def next_best_question_key(state: SessionState) -> Optional[str]:
     # Nome obrigatório antes de concluir
     if not state.lead_profile.get("name") and "lead_name" not in state.asked_questions:
         return "lead_name"
+
+    # Telefone obrigatório antes de concluir
+    if not state.lead_profile.get("phone") and "lead_phone" not in state.asked_questions:
+        return "lead_phone"
 
     # Campos importantes extras (pegar 2–4 no máximo: faremos 1 de cada vez)
     for key in PREFERENCE_ORDER:

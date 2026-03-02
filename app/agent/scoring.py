@@ -16,15 +16,49 @@ def compute_lead_score(state: SessionState) -> Dict[str, object]:
     if state.criteria.neighborhood:
         score += 15
         reasons.append("neighborhood_defined")
-    if state.criteria.micro_location and state.criteria.micro_location != "orla":
+
+    # Micro-location (proximidade da praia) - indica preferência clara
+    micro_loc = state.criteria.micro_location
+    if micro_loc and str(micro_loc).lower() not in {"orla", "indifferent", "indiferente"}:
         score += 10
         reasons.append("micro_location_defined")
+        # Beira-mar indica alto padrão
+        if micro_loc == "beira-mar":
+            score += 5
+            reasons.append("beachfront_preference")
+
     if state.criteria.bedrooms and state.criteria.bedrooms >= 3:
         score += 10
         reasons.append("3_plus_bedrooms")
+
+    # Suítes - indica imóvel de padrão mais alto
+    if state.criteria.suites and state.criteria.suites >= 1:
+        score += 8
+        reasons.append("suites_preference")
+        if state.criteria.suites >= 2:
+            score += 5
+            reasons.append("multiple_suites")
+
+    # Banheiros - múltiplos banheiros indicam imóvel maior
+    bathrooms = state.criteria.bathrooms_min
+    if bathrooms and bathrooms >= 2:
+        score += 5
+        reasons.append("multiple_bathrooms")
+
     if state.criteria.parking and state.criteria.parking >= 2:
         score += 5
         reasons.append("2_plus_parking")
+
+    # Leisure - área de lazer completa indica alto padrão
+    leisure_req = state.triage_fields.get("leisure_required", {}).get("value")
+    leisure_level = state.triage_fields.get("leisure_level", {}).get("value")
+    if leisure_req == "yes":
+        score += 3
+        reasons.append("leisure_required")
+        if leisure_level == "full":
+            score += 5
+            reasons.append("leisure_full_preference")
+
     if state.intent in {"comprar", "alugar"}:
         score += 5
         reasons.append("intent_confirmed")

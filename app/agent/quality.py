@@ -36,7 +36,7 @@ def compute_quality_score(state: SessionState) -> Dict[str, Any]:
     reasons = []
 
     # === COMPLETUDE DOS CAMPOS CRÍTICOS ===
-    critical_fields = CRITICAL_ORDER  # ["intent", "city", "neighborhood", "property_type", "bedrooms", "parking", "budget", "timeline"]
+    critical_fields = CRITICAL_ORDER  # inclui novos campos: suites, bathrooms_min, micro_location, leisure_required
     total_critical = len(critical_fields)
     filled_critical = 0
     confirmed_critical = 0
@@ -52,12 +52,18 @@ def compute_quality_score(state: SessionState) -> Dict[str, Any]:
         else:
             field_data = state.triage_fields.get(field)
             if field_data and field_data.get("value") is not None:
-                filled_critical += 1
-                if field_data.get("status") == "confirmed":
-                    confirmed_critical += 1
-                elif field_data.get("status") == "inferred":
-                    score -= 5
-                    reasons.append(f"inferred_{field}")
+                value = field_data.get("value")
+                # "indifferent" conta como preenchido
+                if value == "indifferent" or str(value).lower() in {"indifferent", "indiferente", "tanto faz"}:
+                    filled_critical += 1
+                    confirmed_critical += 1  # "indifferent" é considerado confirmado
+                else:
+                    filled_critical += 1
+                    if field_data.get("status") == "confirmed":
+                        confirmed_critical += 1
+                    elif field_data.get("status") == "inferred":
+                        score -= 5
+                        reasons.append(f"inferred_{field}")
             else:
                 # Campo crítico faltando
                 score -= 15
@@ -123,14 +129,32 @@ def compute_quality_score(state: SessionState) -> Dict[str, Any]:
     # === BÔNUS POR CAMPOS EXTRAS ===
 
     # Micro-location confirmada e específica
-    if micro_loc and micro_loc.get("status") == "confirmed" and micro_val not in ["orla", None]:
+    if micro_loc and micro_loc.get("status") == "confirmed" and micro_val not in ["orla", None, "indifferent"]:
         score += 5
         reasons.append("micro_location_confirmed")
 
-    # Suites definidas
+    # Suites definidas (não "indifferent")
     if state.criteria.suites and state.criteria.suites > 0:
         score += 3
         reasons.append("suites_defined")
+
+    # Banheiros definidos
+    bathrooms = state.criteria.bathrooms_min
+    if bathrooms and bathrooms >= 2:
+        score += 2
+        reasons.append("bathrooms_defined")
+
+    # Leisure definido e específico
+    leisure_req = state.triage_fields.get("leisure_required")
+    if leisure_req and leisure_req.get("value") not in [None, "indifferent"]:
+        score += 2
+        reasons.append("leisure_preference_defined")
+
+    # Leisure level definido
+    leisure_lv = state.triage_fields.get("leisure_level")
+    if leisure_lv and leisure_lv.get("value") == "full":
+        score += 3
+        reasons.append("leisure_full_preference")
 
     # Nome do lead disponível
     if state.lead_profile.get("name"):

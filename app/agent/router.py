@@ -216,15 +216,25 @@ def _normalize_neighborhood(neighborhood: Optional[str]) -> Optional[str]:
     """Normaliza nome de bairro para comparação."""
     if not neighborhood:
         return None
-    return neighborhood.lower().strip()
+    # Se for lista, pega o primeiro elemento
+    if isinstance(neighborhood, list):
+        if not neighborhood:
+            return None
+        neighborhood = neighborhood[0]
+    return str(neighborhood).lower().strip()
 
 
 def _normalize_micro_location(micro: Optional[str]) -> Optional[str]:
     """Normaliza micro-localização para comparação."""
     if not micro:
         return None
+    # Se for lista, pega o primeiro elemento
+    if isinstance(micro, list):
+        if not micro:
+            return None
+        micro = micro[0]
     # Remove parênteses e normaliza
-    normalized = micro.lower().strip()
+    normalized = str(micro).lower().strip()
     normalized = normalized.replace("(praia)", "").replace("_da_praia", "").strip()
     return normalized
 
@@ -233,7 +243,12 @@ def _get_intent_type(intent: Optional[str]) -> Optional[str]:
     """Converte intent para tipo de operação."""
     if not intent:
         return None
-    intent_lower = intent.lower()
+    # Se for lista, pega o primeiro elemento
+    if isinstance(intent, list):
+        if not intent:
+            return None
+        intent = intent[0]
+    intent_lower = str(intent).lower()
     if intent_lower in ("alugar", "aluguel"):
         return "rent"
     if intent_lower in ("comprar", "compra"):

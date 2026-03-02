@@ -1,13 +1,15 @@
 from __future__ import annotations
 import os
-import asyncio
-import json
-from datetime import datetime, timedelta
-from fastapi import FastAPI, Request, Depends, HTTPException
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
+import secrets
+import logging
+from datetime import datetime
+from fastapi import FastAPI, Request, Depends, HTTPException, Header
 from fastapi.responses import HTMLResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from dotenv import load_dotenv
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 from app.agent.controller import handle_message
 from app.agent.llm import LLM_PREWARM, prewarm_llm
 from app.core.logging import setup_logging
@@ -19,16 +21,37 @@ load_dotenv()
 # Setup logging first
 setup_logging()
 
+logger = logging.getLogger(__name__)
+
+# Rate limiter: chave por IP
+limiter = Limiter(key_func=get_remote_address)
+
 app = FastAPI(title="Agente Imobiliário WhatsApp", version="0.1.0")
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # Include routers
 app.include_router(whatsapp_router)
 
 
 class WebhookRequest(BaseModel):
-    session_id: str
-    message: str
-    name: str | None = None
+    session_id: str = Field(..., min_length=1, max_length=128)
+    message: str = Field(..., min_length=1, max_length=5000)
+    name: str | None = Field(default=None, max_length=128)
+
+
+async def verify_api_key(x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> None:
+    """Valida a chave de API no header X-API-Key.
+
+    Se WEBHOOK_API_KEY não estiver configurado, loga um aviso mas permite
+    acesso (compatibilidade com ambientes de desenvolvimento sem chave).
+    """
+    if not settings.WEBHOOK_API_KEY:
+        logger.warning("WEBHOOK_API_KEY não configurado - endpoint /webhook sem autenticação")
+        return
+    if not x_api_key or not secrets.compare_digest(x_api_key, settings.WEBHOOK_API_KEY):
+        logger.warning("Tentativa de acesso ao /webhook com chave inválida")
+        raise HTTPException(status_code=401, detail="Chave de API inválida ou ausente")
 
 
 @app.get("/")
@@ -76,18 +99,18 @@ async def home():
     </head>
     <body>
         <div class="container">
-            <h1>🏠 Agente Imobiliário API</h1>
-            <p class="status">✓ Status: Online</p>
+            <h1>Agente Imobiliário API</h1>
+            <p class="status">Status: Online</p>
             <div class="links">
-                <a href="/docs">📚 API Documentation</a>
-                <a href="/health">❤️ Health Check</a>
+                <a href="/docs">API Documentation</a>
+                <a href="/health">Health Check</a>
             </div>
             <div class="info">
                 <p><strong>Endpoints disponíveis:</strong></p>
                 <ul>
                     <li><code>GET /</code> - Esta página</li>
                     <li><code>GET /health</code> - Health check</li>
-                    <li><code>POST /webhook</code> - Webhook do agente</li>
+                    <li><code>POST /webhook</code> - Webhook do agente (requer X-API-Key)</li>
                     <li><code>GET /webhook/whatsapp</code> - Verificação WhatsApp</li>
                     <li><code>POST /webhook/whatsapp</code> - Eventos WhatsApp</li>
                     <li><code>GET /docs</code> - Documentação interativa</li>
@@ -112,9 +135,6 @@ async def health():
 @app.on_event("startup")
 async def _startup():
     """Application startup - validate settings and log configuration."""
-    import logging
-    logger = logging.getLogger(__name__)
-
     # Validate WhatsApp configuration
     validation = settings.validate_whatsapp_config()
     if validation["errors"]:
@@ -135,10 +155,17 @@ async def _startup():
     return
 
 
-@app.post("/webhook")
+@app.post("/webhook", dependencies=[Depends(verify_api_key)])
+@limiter.limit("30/minute")
 async def webhook(body: WebhookRequest, request: Request):
-    correlation_id = os.getenv("CORRELATION_ID") or os.urandom(8).hex()
+    correlation_id = os.urandom(8).hex()
     request.state.correlation_id = correlation_id
+    logger.info(
+        "webhook request - session=%s, msg_len=%d, correlation=%s",
+        body.session_id,
+        len(body.message),
+        correlation_id,
+    )
     # Only expose the textual reply to the client; hide internal state/session details.
     result = handle_message(body.session_id, body.message, name=body.name, correlation_id=correlation_id)
     if isinstance(result, dict) and "reply" in result:

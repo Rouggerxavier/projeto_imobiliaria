@@ -1,9 +1,12 @@
 from __future__ import annotations
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set
 
 from .ai_agent import get_agent
 from .state import SessionState
+
+logger = logging.getLogger(__name__)
 
 
 # Enum estrito de ações permitidas
@@ -43,7 +46,7 @@ def _validate_and_sanitize_filters(filters: Dict[str, Any]) -> Dict[str, Any]:
     for key, value in filters.items():
         # Ignora campos não permitidos
         if key not in ALLOWED_FILTER_KEYS:
-            print(f"⚠️ Campo inválido ignorado em filters: {key}")
+            logger.warning("Campo inválido ignorado em filters: %s", key)
             continue
         
         # Valida tipos básicos
@@ -61,7 +64,7 @@ def _validate_and_sanitize_filters(filters: Dict[str, Any]) -> Dict[str, Any]:
             else:
                 sanitized[key] = str(value) if value else None
         except (ValueError, TypeError) as e:
-            print(f"⚠️ Erro ao validar {key}={value}: {e}")
+            logger.warning("Erro ao validar %s=%s: %s", key, value, e)
             continue
     
     return sanitized
@@ -76,7 +79,7 @@ def _coerce_plan(raw: Dict[str, Any]) -> Plan:
     
     # Validação estrita de action
     if action not in ALLOWED_ACTIONS:
-        print(f"⚠️ Ação inválida '{action}', usando ASK como fallback")
+        logger.warning("Ação inválida '%s', usando ASK como fallback", action)
         action = "ASK"
     
     # Valida e sanitiza filters
@@ -86,7 +89,7 @@ def _coerce_plan(raw: Dict[str, Any]) -> Plan:
     message = str(raw.get("message") or raw.get("question") or "")
     if not message.strip():
         message = "Pode me dar mais informações para eu ajudar melhor?"
-        print("⚠️ Mensagem vazia retornada pela LLM, usando fallback")
+        logger.warning("Mensagem vazia retornada pela LLM, usando fallback")
     
     return Plan(
         action=action,
@@ -139,13 +142,13 @@ def plan_next_step(
         
         # Log para debug (em produção, use logging apropriado)
         if plan.reasoning:
-            print(f"🧠 Plano: {plan.action} - {plan.reasoning}")
+            logger.debug("Plano: %s - %s", plan.action, plan.reasoning)
         
         return plan
         
     except Exception as e:
         # Em caso de erro, retorna plano seguro de fallback
-        print(f"❌ Erro ao planejar próxima ação: {e}")
+        logger.error("Erro ao planejar próxima ação: %s", e)
         return Plan(
             action="ASK",
             message="Desculpe, pode repetir? Quero entender melhor sua necessidade.",

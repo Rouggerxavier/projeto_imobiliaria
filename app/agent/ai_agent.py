@@ -8,11 +8,14 @@ Agora: 1 chamada unificada OU fallback determinístico
 
 from __future__ import annotations
 
+import logging
 from typing import Dict, Any, Optional, List, Tuple
 from .llm import call_llm, call_llm_with_fallback, LLM_API_KEY, USE_LLM, llm_decide, TRIAGE_ONLY
 from . import prompts
 from .state import SessionState
 from .rules import can_search_properties, missing_critical_fields
+
+logger = logging.getLogger(__name__)
 
 
 class RealEstateAIAgent:
@@ -31,7 +34,7 @@ class RealEstateAIAgent:
         """
         self.use_llm = use_llm and USE_LLM and bool(LLM_API_KEY)
         if not self.use_llm:
-            print("[WARN] Agente rodando em modo FALLBACK (sem LLM)")
+            logger.warning("Agente rodando em modo FALLBACK (sem LLM)")
 
     def decide(self, message: str, state: SessionState, neighborhoods: List[str] = None, correlation_id: str | None = None) -> Tuple[Dict[str, Any], bool]:
         """
@@ -50,13 +53,21 @@ class RealEstateAIAgent:
         # Prepara resumo compacto do estado
         state_summary = self._build_state_summary(state, neighborhoods or [])
 
-        # Chama função unificada
-        decision, used_llm = llm_decide(message, state_summary, use_cache=True, triage_only=TRIAGE_ONLY, correlation_id=correlation_id)
+        # Chama função unificada (passa state para circuit breaker)
+        decision, used_llm = llm_decide(
+            message,
+            state_summary,
+            use_cache=True,
+            triage_only=TRIAGE_ONLY,
+            correlation_id=correlation_id,
+            session_state=state  # Para circuit breaker / degraded mode
+        )
 
+        action = decision.get('plan', {}).get('action', 'N/A')
         if used_llm:
-            print(f"[LLM] Decidiu: {decision.get('plan', {}).get('action', 'N/A')}")
+            logger.info("LLM decidiu: %s", action)
         else:
-            print(f"[FALLBACK] Decidiu: {decision.get('plan', {}).get('action', 'N/A')}")
+            logger.info("FALLBACK decidiu: %s", action)
 
         return decision, used_llm
 
@@ -108,7 +119,7 @@ class RealEstateAIAgent:
             )
             return result
         except Exception as e:
-            print(f"⚠️ Erro na classificação de intent, usando fallback: {e}")
+            logger.warning("Erro na classificação de intent, usando fallback: %s", e)
             return self._classify_intent_fallback(message)
     
     def extract_criteria(
@@ -147,8 +158,8 @@ class RealEstateAIAgent:
                 temperature=0.1  # Muito baixa para extração precisa
             )
             return result
-        except Exception as e: 
-            print(f"⚠️ Erro na extração, usando fallback: {e}")
+        except Exception as e:
+            logger.warning("Erro na extração, usando fallback: %s", e)
             return self._extract_criteria_fallback(message, known_neighborhoods)
     
     def plan_next_step(
@@ -205,7 +216,7 @@ class RealEstateAIAgent:
             )
             return result
         except Exception as e:
-            print(f"⚠️ Erro no planejamento, usando fallback: {e}")
+            logger.warning("Erro no planejamento, usando fallback: %s", e)
             return self._plan_fallback(state, missing_fields, extracted)
     
     def should_handoff(
@@ -250,7 +261,7 @@ class RealEstateAIAgent:
             
             return should, reason, urgency
         except Exception as e:
-            print(f"⚠️ Erro na decisão de handoff, usando fallback: {e}")
+            logger.warning("Erro na decisão de handoff, usando fallback: %s", e)
             return self._handoff_fallback(message, state)
     
     def generate_natural_response(

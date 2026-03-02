@@ -299,11 +299,83 @@ def extract_boolean(text: str, keywords_true: Set[str], keywords_false: Set[str]
     return None
 
 
+def detect_indifferent(text: str) -> bool:
+    """Detecta se a mensagem indica 'indiferente/tanto faz'."""
+    lowered = _strip_accents(text.lower())
+    indifferent_keywords = [
+        "tanto faz", "indiferente", "qualquer", "nao importa", "não importa",
+        "sem preferencia", "sem preferência", "pode ser qualquer"
+    ]
+    return any(kw in lowered for kw in indifferent_keywords)
+
+
+def extract_bathrooms(text: str) -> Optional[int]:
+    """Extrai quantidade de banheiros."""
+    lowered = _strip_accents(text.lower())
+    # Padrões: "2 banheiros", "1 banheiro", "3+ banheiros"
+    match = extract_number(lowered, r"(\d+)\s*\+?\s*(banheiro|wc|lavabo|bath)s?")
+    return match
+
+
+def extract_beach_proximity(text: str) -> Optional[str]:
+    """Extrai proximidade da praia."""
+    lowered = _strip_accents(text.lower())
+    if "beira mar" in lowered or "beira-mar" in lowered or "de frente" in lowered or "frente pra praia" in lowered:
+        return "beira-mar"
+    if "1 quadra" in lowered or "uma quadra" in lowered:
+        return "1_quadra"
+    if ("2 quadra" in lowered or "3 quadra" in lowered or "duas quadras" in lowered or
+        "tres quadras" in lowered or "2-3 quadras" in lowered):
+        return "2-3_quadras"
+    if "longe da praia" in lowered or "afastado da praia" in lowered:
+        return ">3_quadras"
+    if "praia" in lowered or "orla" in lowered:
+        return "orla"  # ambíguo, precisa esclarecimento
+    return None
+
+
+def extract_leisure_level(text: str) -> Optional[str]:
+    """Extrai nível de área de lazer."""
+    lowered = _strip_accents(text.lower())
+    if "lazer complet" in lowered or "area completa" in lowered or "com tudo" in lowered:
+        return "full"
+    if "lazer ok" in lowered or "razoavel" in lowered or "medio" in lowered or "moderado" in lowered:
+        return "ok"
+    if "lazer simples" in lowered or "basico" in lowered or "minimo" in lowered:
+        return "simple"
+    return None
+
+
+def extract_floor_preference(text: str) -> Optional[str]:
+    """Extrai preferência de andar."""
+    lowered = _strip_accents(text.lower())
+    if "andar alto" in lowered or "ultimo andar" in lowered or "cobertura" in lowered:
+        return "alto"
+    if "andar medio" in lowered or "intermediario" in lowered:
+        return "medio"
+    if "andar baixo" in lowered or "terreo" in lowered or "primeiro andar" in lowered:
+        return "baixo"
+    return None
+
+
+def extract_sun_preference(text: str) -> Optional[str]:
+    """Extrai preferência de posição solar."""
+    lowered = _strip_accents(text.lower())
+    if "nascente" in lowered or "sol da manha" in lowered or "manha" in lowered:
+        return "nascente"
+    if "poente" in lowered or "sol da tarde" in lowered or "tarde" in lowered:
+        return "poente"
+    return None
+
+
 def extract_criteria(message: str, known_neighborhoods: Iterable[str]) -> Dict[str, object]:
     text = message
     result: Dict[str, object] = {}
 
     lowered_plain = _strip_accents(text.lower())
+
+    # Detecta "indiferente" global (aplicável a qualquer pergunta)
+    is_indifferent = detect_indifferent(text)
 
     # Intent explícita (comprar/alugar)
     if "comprar" in lowered_plain or "compra" in lowered_plain or "investir" in lowered_plain:
@@ -318,8 +390,12 @@ def extract_criteria(message: str, known_neighborhoods: Iterable[str]) -> Dict[s
     if neighborhood:
         result["neighborhood"] = neighborhood
 
-    if "orla" in lowered_plain or "beira mar" in lowered_plain or "beira-mar" in lowered_plain or "praia" in lowered_plain:
-        result["micro_location"] = "orla"
+    # Beach proximity (micro_location)
+    beach_prox = extract_beach_proximity(text)
+    if beach_prox:
+        result["micro_location"] = beach_prox
+    elif is_indifferent:
+        result["micro_location"] = "indifferent"
 
     prop_type = detect_type(text)
     if prop_type:
@@ -329,9 +405,23 @@ def extract_criteria(message: str, known_neighborhoods: Iterable[str]) -> Dict[s
     bedrooms = extract_number(lowered, r"(\d+)\s*(quarto|qtos|dorm|q\b|qts)")
     if bedrooms:
         result["bedrooms"] = bedrooms
+
+    # Suítes
     suites = extract_number(lowered, r"(\d+)\s*(suite|su[ií]te)s?")
-    if suites:
+    if suites is not None:
         result["suites"] = suites
+    elif "nenhuma suite" in lowered or "sem suite" in lowered or "0 suite" in lowered:
+        result["suites"] = 0
+    elif is_indifferent:
+        result["suites"] = "indifferent"
+
+    # Banheiros
+    bathrooms = extract_bathrooms(text)
+    if bathrooms is not None:
+        result["bathrooms_min"] = bathrooms
+    elif is_indifferent:
+        result["bathrooms_min"] = "indifferent"
+
     parking = extract_number(lowered, r"(\d+)\s*(vaga|vagas)")
     if parking is not None:
         result["parking"] = parking
@@ -347,10 +437,14 @@ def extract_criteria(message: str, known_neighborhoods: Iterable[str]) -> Dict[s
     pet = extract_boolean(text, {"pet", "cachorro", "gato", "aceita pet", "pet friendly"}, {"nao aceita pet", "sem pet"})
     if pet is not None:
         result["pet"] = pet
+    elif is_indifferent:
+        result["pet"] = "indifferent"
 
     furnished = extract_boolean(text, {"mobiliado", "mobiliada", "moveis", "mobilia"}, {"sem mobilia", "nao mobiliado"})
     if furnished is not None:
         result["furnished"] = furnished
+    elif is_indifferent:
+        result["furnished"] = "indifferent"
 
     urgency = None
     if any(k in lowered for k in ["urgente", "hoje", "agora", "esse mes", "o quanto antes"]):
@@ -360,8 +454,22 @@ def extract_criteria(message: str, known_neighborhoods: Iterable[str]) -> Dict[s
     if urgency:
         result["urgency"] = urgency
 
-    if "o mais rapido" in lowered or "o mais rÃ¡pido" in lowered or "mais rapido possivel" in lowered or "o quanto antes" in lowered or "asap" in lowered:
+    if "o mais rapido" in lowered or "o mais rápido" in lowered or "mais rapido possivel" in lowered or "o quanto antes" in lowered or "asap" in lowered:
         result["timeline"] = "3m"
+
+    # Leisure detection
+    leisure_level = extract_leisure_level(text)
+    if leisure_level:
+        result["leisure_level"] = leisure_level
+
+    # Leisure required
+    if "area de lazer" in lowered or "lazer" in lowered:
+        if "nao" in lowered or "não" in lowered or "sem lazer" in lowered:
+            result["leisure_required"] = "no"
+        elif "preciso" in lowered or "importante" in lowered or "essencial" in lowered:
+            result["leisure_required"] = "yes"
+        elif is_indifferent:
+            result["leisure_required"] = "indifferent"
 
     leisure_keywords = {
         "piscina": "piscina",
@@ -370,7 +478,7 @@ def extract_criteria(message: str, known_neighborhoods: Iterable[str]) -> Dict[s
         "playground": "playground",
         "quadra": "quadra",
         "cowork": "coworking",
-        "salÃ£o": "salao",
+        "salão": "salao",
         "salon": "salao",
         "churras": "churrasqueira",
         "brinquedoteca": "brinquedoteca",
@@ -382,6 +490,16 @@ def extract_criteria(message: str, known_neighborhoods: Iterable[str]) -> Dict[s
             leisure_found.append(canonical)
     if leisure_found:
         result["leisure_features"] = leisure_found
+
+    # Floor preference
+    floor_pref = extract_floor_preference(text)
+    if floor_pref:
+        result["floor_pref"] = floor_pref
+
+    # Sun preference
+    sun_pref = extract_sun_preference(text)
+    if sun_pref:
+        result["sun_pref"] = sun_pref
 
     return result
 

@@ -1,17 +1,21 @@
 {
-  "last_reset_date": "2026-02-06",
+  "last_reset_date": "2026-02-23",
   "agents": {
     "agent_paula": {
-      "assigned_today": 18,
-      "last_assigned_at": "2026-02-06T13:46:13.350504Z"
+      "assigned_today": 2,
+      "last_assigned_at": "2026-02-23T14:33:12.794730Z"
     },
     "agent_ana": {
-      "assigned_today": 7,
+      "assigned_today": 0,
       "last_assigned_at": "2026-02-06T13:46:13.363210Z"
     },
     "agent_joao": {
-      "assigned_today": 7,
+      "assigned_today": 0,
       "last_assigned_at": "2026-02-06T13:46:13.373631Z"
+    },
+    "agent_maria": {
+      "assigned_today": 1,
+      "last_assigned_at": "2026-02-23T11:43:24.383585Z"
     }
   }
 }
